@@ -1,0 +1,66 @@
+name: Deploy webapp to GitHub Pages
+
+# Serves src/main/webapp as the site root, so the app is reachable at
+# https://<custom-domain>/ instead of /src/main/webapp/index.html.
+# Nothing in the repo tree is moved -- the layout is rearranged only inside
+# the build artifact.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let an in-flight deploy finish rather than cancelling it mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage webapp as site root
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          cp -a src/main/webapp/. _site/
+
+          # A servlet container blocks /WEB-INF/* by spec. A static host does not,
+          # so shipping it would publish every OAuth client secret in the clear.
+          rm -rf _site/WEB-INF
+
+          # The repo-root CNAME sits outside the artifact, so carry it in.
+          cp CNAME _site/CNAME
+
+          # The Pages Actions flow does not run Jekyll; this makes that explicit.
+          touch _site/.nojekyll
+
+      - name: Fail if the artifact contains credentials
+        run: |
+          set -euo pipefail
+          hits=$(find _site \( -iname '*client_secret*' -o -iname '*client_id*' \
+                            -o -iname '*api_key*' -o -name 'WEB-INF' \) -print)
+          if [ -n "$hits" ]; then
+            echo "::error::refusing to publish, credential-shaped paths found:"
+            printf '%s\n' "$hits"
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
