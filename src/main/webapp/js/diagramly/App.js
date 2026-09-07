@@ -21,7 +21,7 @@ App = function(editor, container, lightbox)
 	this.editor.addListener('autosaveChanged', mxUtils.bind(this, function()
 	{
 		var file = this.getCurrentFile();
-		
+
 		if (file != null)
 		{
 			EditorUi.logEvent({category: ((this.editor.autosave) ? 'ON' : 'OFF') +
@@ -29,6 +29,42 @@ App = function(editor, container, lightbox)
 				label: 'autosave_' + ((this.editor.autosave) ? 'on' : 'off')});
 		}
 	}));
+
+	// Reloads this tab when a release channel switch (flagged by
+	// switchReleaseChannel in any tab) activates the other channel's
+	// service worker, so no tab keeps running one channel's shell against
+	// the other channel's cache. Only with no unsaved changes.
+	if (Editor.enableServiceWorker && ('serviceWorker' in navigator))
+	{
+		try
+		{
+			navigator.serviceWorker.addEventListener('controllerchange',
+				mxUtils.bind(this, function()
+			{
+				try
+				{
+					var ts = parseInt(localStorage.getItem(
+						'.drawio-channel-switch-ts'), 10);
+					var elapsed = Date.now() - ts;
+
+					if (!isNaN(elapsed) && elapsed >= 0 && elapsed < 600000 &&
+						(this.getCurrentFile() == null ||
+						!this.getCurrentFile().isModified()))
+					{
+						window.location.reload();
+					}
+				}
+				catch (e)
+				{
+					// ignore
+				}
+			}));
+		}
+		catch (e)
+		{
+			// ignore
+		}
+	}
 	
 	// Pre-fetches images
 	if (mxClient.IS_SVG)
@@ -301,8 +337,7 @@ App.pluginRegistry = {'4xAKTrabTpTzahoLthkwPNUn': 'plugins/explore.js',
 	'replay': 'plugins/replay.js', 'anon': 'plugins/anonymize.js',
 	'tr': 'plugins/trello.js', 'f5': 'plugins/rackF5.js',
 	'webcola': 'plugins/webcola/webcola.js', 'rnd': 'plugins/random.js',
-	'page': 'plugins/page.js', 'gd': 'plugins/googledrive.js',
-	'tags': 'plugins/tags.js'};
+	'page': 'plugins/page.js', 'tags': 'plugins/tags.js'};
 
 App.publicPlugin = [
 	'ex',
@@ -319,7 +354,7 @@ App.publicPlugin = [
 	'replay',
 	'anon',
 	'webcola',
-//	'rnd', 'page', 'gd',
+//	'rnd', 'page',
 	'tags'
 ];
 
@@ -552,11 +587,25 @@ App.getStoredMode = function()
  */
 App.clearServiceWorker = function(success, error)
 {
+	try
+	{
+		// A cleared PWA cache also resets the release channel state.
+		localStorage.removeItem('.drawio-channel');
+		localStorage.removeItem('.drawio-channel-ts');
+		localStorage.removeItem('.drawio-channel-swerr-ts');
+		localStorage.removeItem('.drawio-channel-swfail');
+		localStorage.removeItem('.drawio-channel-switch-ts');
+	}
+	catch (e)
+	{
+		// ignore
+	}
+
 	navigator.serviceWorker.getRegistration().then(function(reg)
 	{
 		if (reg != null)
 		{
-			reg.unregister().then(function()
+			return reg.unregister().then(function()
 			{
 				if (success != null)
 				{
@@ -564,6 +613,11 @@ App.clearServiceWorker = function(success, error)
 					success = null;
 				}
 			});
+		}
+		else if (success != null)
+		{
+			success();
+			success = null;
 		}
 	})['catch'](function()
 	{
@@ -575,6 +629,111 @@ App.clearServiceWorker = function(success, error)
 };
 
 /**
+ * Returns 'stable' if this browser is pinned to the stable release channel,
+ * or null for the default (beta) channel.
+ */
+App.getReleaseChannel = function()
+{
+	try
+	{
+		return (isLocalStorage && localStorage.getItem('.drawio-channel') ==
+			'stable') ? 'stable' : null;
+	}
+	catch (e)
+	{
+		return null;
+	}
+};
+
+/**
+ * Stores the release channel ('stable' or null for beta).
+ */
+App.setReleaseChannel = function(channel)
+{
+	try
+	{
+		if (channel == 'stable')
+		{
+			localStorage.setItem('.drawio-channel', 'stable');
+		}
+		else
+		{
+			localStorage.removeItem('.drawio-channel');
+		}
+	}
+	catch (e)
+	{
+		// ignore
+	}
+};
+
+/**
+ * Rate-limited (one report per day) logging for service worker failures,
+ * plus a distinct-day failure counter for the stable channel that drives
+ * the automatic fallback to beta in App.main.
+ */
+App.logServiceWorkerError = function(swUrl, e)
+{
+	try
+	{
+		EditorUi.debug('App.logServiceWorkerError', swUrl, e);
+
+		var now = Date.now();
+		var ts = parseInt(localStorage.getItem('.drawio-channel-swerr-ts'), 10);
+		var elapsed = now - ts;
+
+		if (isNaN(elapsed) || elapsed < 0 || elapsed >= 86400000)
+		{
+			localStorage.setItem('.drawio-channel-swerr-ts', String(now));
+
+			if (App.getReleaseChannel() == 'stable')
+			{
+				localStorage.setItem('.drawio-channel-swfail',
+					String(App.getServiceWorkerFailures() + 1));
+			}
+
+			EditorUi.logError('Service worker error: ' + swUrl,
+				null, null, null, e);
+		}
+	}
+	catch (e2)
+	{
+		// ignore
+	}
+};
+
+/**
+ * Returns the number of distinct days with stable channel failures.
+ */
+App.getServiceWorkerFailures = function()
+{
+	try
+	{
+		return parseInt(localStorage.getItem('.drawio-channel-swfail'), 10) || 0;
+	}
+	catch (e)
+	{
+		return 0;
+	}
+};
+
+/**
+ * Resets the service worker failure counter and report timestamp.
+ */
+App.resetServiceWorkerFailures = function()
+{
+	try
+	{
+		localStorage.removeItem('.drawio-channel-swfail');
+		localStorage.removeItem('.drawio-channel-swerr-ts');
+	}
+	catch (e)
+	{
+		// ignore
+	}
+};
+
+/**
  * Returns true if the given link is on the same domain as this app.
  */
 App.isSameDomain = function(link)
@@ -582,18 +741,24 @@ App.isSameDomain = function(link)
 	var a = document.createElement('a');
 	a.href = link;
 
-	return a.protocol === window.location.protocol ||
+	return a.protocol === window.location.protocol &&
 		a.host === window.location.host;
 };
 
 /**
- * Returns true if the given relative path is a built-in plugin.
+ * Returns true if the given relative path is a built-in plugin. Accepts the
+ * path as stored in App.pluginRegistry and the leading slash form used before
+ * the registry was made relative, as resolved against PLUGINS_BASE_PATH by
+ * the caller. Both forms are built from the registry so that the given path
+ * is only ever compared, never rewritten.
  */
 App.isBuiltInPlugin = function(path)
 {
 	for (var key in App.pluginRegistry)
 	{
-		if (App.pluginRegistry[key] == path)
+		var plugin = App.pluginRegistry[key];
+
+		if (plugin === path || PLUGINS_BASE_PATH + '/' + plugin === path)
 		{
 			return true;
 		}
@@ -635,7 +800,7 @@ App.main = function(callback, createUi)
 		if (mxIsElectron && typeof electron === 'undefined')
 		{
 			alert('Runtime Environment not found.');
-			document.body.innerHTML = '<div style="margin-top:10%;text-align:center;">' +
+			document.body.innerHTML = '<div style="grid-column:1 / -1;grid-row:1 / -1;margin-top:10%;text-align:center;">' +
 				'<img src="mxgraph/images/warning.png" align="top" style="padding-right:6px;"/>' +
 				'Runtime Environment not found.</div>';
 			
@@ -688,7 +853,7 @@ App.main = function(callback, createUi)
 			'ac.draw.io' === window.location.hostname ||
 			'aj.draw.io' === window.location.hostname))
 		{
-			document.body.innerHTML = '<div style="margin-top:10%;text-align:center;">Stand-alone mode not allowed for this domain.</div>';
+			document.body.innerHTML = '<div style="grid-column:1 / -1;grid-row:1 / -1;margin-top:10%;text-align:center;">Stand-alone mode not allowed for this domain.</div>';
 			
 			return;
 		}
@@ -741,17 +906,55 @@ App.main = function(callback, createUi)
 				{
 					navigator.serviceWorker.getRegistration().then(function(reg)
 					{
-						if (reg != null)
+						// The registration URL is the release channel: the stable
+						// script is served via the edge route to the pinned build
+						// and needs scope '/' (Service-Worker-Allowed header).
+						var stable = App.getReleaseChannel() == 'stable';
+
+						// Frozen-but-working must not become permanent: after
+						// two weeks of distinct-day stable service worker
+						// failures, fall back to the default channel.
+						if (stable && App.getServiceWorkerFailures() >= 14)
+						{
+							EditorUi.debug('App.main',
+								'Stable channel failing, reverting to beta');
+							App.setReleaseChannel(null);
+							App.resetServiceWorkerFailures();
+							stable = false;
+						}
+
+						var swUrl = (stable) ? 'stable/service-worker.js' :
+							'service-worker.js';
+						var current = (reg != null) ? (reg.active || reg.waiting ||
+							reg.installing) : null;
+
+						if (current != null && stable ==
+							/\/stable\/service-worker\.js$/.test(current.scriptURL))
 						{
 							EditorUi.debug('App.main', 'Updating service worker');
-							reg.update();
+							reg.update().then(function()
+							{
+								App.resetServiceWorkerFailures();
+							})['catch'](function(e)
+							{
+								App.logServiceWorkerError(swUrl, e);
+							});
 						}
-						// Skips service worker install on first load
-						else if (!Editor.isSettingsEnabled() || (mxSettings.settings != null &&
+						// Skips service worker install on first load unless the
+						// channel was pinned (eg. via the ?channel= link) or the
+						// installed worker is on the wrong channel
+						else if (current != null || App.getReleaseChannel() != null ||
+							!Editor.isSettingsEnabled() || (mxSettings.settings != null &&
 							!mxSettings.settings.isNew) || urlParams['enableSW'] == '1')
 						{
-							EditorUi.debug('App.main', 'Installing service worker');
-							navigator.serviceWorker.register('service-worker.js');
+							EditorUi.debug('App.main', 'Installing service worker', swUrl);
+							navigator.serviceWorker.register(swUrl, {scope: './'}).then(function()
+							{
+								App.resetServiceWorkerFailures();
+							})['catch'](function(e)
+							{
+								App.logServiceWorkerError(swUrl, e);
+							});
 						}
 						else
 						{
@@ -892,6 +1095,50 @@ App.main = function(callback, createUi)
 				// Adds bundle text to resources
 				mxResources.parse(xhr[0].getText());
 				
+				// Adds the bundle to the offline cache: language files are
+				// cached on first use instead of being precached, and on the
+				// very first visit this page is not yet controlled by the
+				// service worker, so the request above bypassed it. In dev
+				// mode also fills the missing dev sources - an offline dev
+				// reload needs the complete set, not just the files this
+				// session finished caching (see GenerateServiceWorker)
+				try
+				{
+					if ('serviceWorker' in navigator)
+					{
+						navigator.serviceWorker.ready.then(function(reg)
+						{
+							if (reg.active != null)
+							{
+								reg.active.postMessage({warmLazy: bundle,
+									warmDev: urlParams['dev'] == '1'});
+
+								// Languages configured as installed by
+								// default - each code is validated against
+								// the lazy manifest by the service worker
+								if (Editor.defaultLanguages != null)
+								{
+									for (var i = 0; i < Editor.defaultLanguages.length; i++)
+									{
+										var lang = Editor.defaultLanguages[i];
+
+										if (typeof lang === 'string' &&
+											/^[a-z0-9-]+$/.test(lang))
+										{
+											reg.active.postMessage({warmLazy:
+												'resources/dia_' + lang + '.txt'});
+										}
+									}
+								}
+							}
+						});
+					}
+				}
+				catch (e)
+				{
+					// ignore
+				}
+
 				// Configuration mode
 				if (isLocalStorage && localStorage != null && window.location.hash != null &&
 					window.location.hash.substring(0, 9) == '#_CONFIG_')
@@ -1000,7 +1247,20 @@ App.main = function(callback, createUi)
 						var ui = (createUi != null) ? createUi() : new App(new Editor(
 								urlParams['chrome'] == '0' || uiTheme == 'min',
 								null, null, null, urlParams['chrome'] != '0'));
-						
+
+						// Opens files passed by the OS via the file_handlers
+						// registration in images/manifest.json (installed PWA)
+						if ('launchQueue' in window && urlParams['embed'] != '1')
+						{
+							window.launchQueue.setConsumer(function(launchParams)
+							{
+								if (launchParams.files != null && launchParams.files.length > 0)
+								{
+									ui.loadFileSystemEntry(launchParams.files[0]);
+								}
+							});
+						}
+
 						if (window.mxscript != null)
 						{
 							// Loads dropbox for all browsers but IE8 and below (no CORS) if not disabled or if enabled and in embed mode
@@ -1521,6 +1781,28 @@ App.prototype.init = function()
 		}
 	}));
 
+	// Restores compact mode from settings
+	if (Editor.isSettingsEnabled() && mxSettings.settings.compactMode != null &&
+		this.isDefaultTheme(Editor.currentTheme))
+	{
+		this.setCompactMode(mxSettings.settings.compactMode);
+	}
+
+	// Restores collaboration cursor preferences from settings (an absent key
+	// means no user choice, keeping the default or configured value)
+	if (Editor.isSettingsEnabled())
+	{
+		if (mxSettings.settings.shareCursorPosition != null)
+		{
+			this.shareCursorPosition = mxSettings.settings.shareCursorPosition;
+		}
+
+		if (mxSettings.settings.showRemoteCursors != null)
+		{
+			this.showRemoteCursors = mxSettings.settings.showRemoteCursors;
+		}
+	}
+
 	/**
 	 * Creates github client.
 	 */
@@ -1591,6 +1873,7 @@ App.prototype.init = function()
 					{
 						this.updateButtonContainer();
 						this.restoreLibraries();
+						this.checkReleaseChannel(this.oneDrive);
 					}));
 					
 					// Notifies listeners of new client
@@ -1613,7 +1896,7 @@ App.prototype.init = function()
 		initOneDriveClient();
 	}
 
-	if (urlParams['ms365'] != '0')
+	if (urlParams['ms365'] != '0' && !EditorUi.isElectronApp)
 	{
 		try
 		{
@@ -1623,6 +1906,7 @@ App.prototype.init = function()
 			{
 				this.updateButtonContainer();
 				this.restoreLibraries();
+				this.checkReleaseChannel(this.m365);
 			}));
 
 			// Notifies listeners of new client
@@ -1707,6 +1991,8 @@ App.prototype.init = function()
 							{
 								this.checkLicense();
 							}
+
+							this.checkReleaseChannel(this.drive);
 						}))
 						
 						// Notifies listeners of new client
@@ -1835,32 +2121,14 @@ App.prototype.init = function()
 				// Fits diagram to window
 				if (Editor.fitDiagramOnLoad)
 				{
-					this.initialFitDiagram();
+					this.fitInitialView();
 				}
 			}));
 		}
 		
-		if (!mxClient.IS_CHROMEAPP && !EditorUi.isElectronApp && DrawioFile.SYNC == 'auto' &&
-			urlParams['local'] != '1' && urlParams['stealth'] != '1' && !this.isOffline() &&
-			Editor.enableRealtimeCache && (!this.editor.chromeless || this.editor.editable))
-		{
-			// Checks if the cache is alive
-			var timeoutThread = window.setTimeout(mxUtils.bind(this, function()
-			{
-				// Switches to sync via sockets if cache is not reachable
-				Editor.enableRealtimeCache = false;
-			}), Editor.cacheTimeout);
-			
-			mxUtils.get(EditorUi.cacheUrl + '?alive', mxUtils.bind(this, function(req)
-			{
-				Editor.enableRealtimeCache = req.getStatus() >= 200 && req.getStatus() <= 299;
-				window.clearTimeout(timeoutThread);
-			}), function()
-			{
-				Editor.enableRealtimeCache = false;
-				window.clearTimeout(timeoutThread);
-			});
-		}
+		// Checks if the cache is alive (also runs when the first file
+		// starts to sync, eg. in embed mode, see DrawioFileSync.start)
+		DrawioFileSync.checkCacheAlive(this);
 	}
 
 	this.updateHeader();
@@ -2272,8 +2540,154 @@ App.prototype.showRatingBanner = function()
 };
 
 /**
+ * Looks up the release channel for the signed-in account's email domain and
+ * switches this browser when it changed. Only the email domain is
+ * transmitted (no personal information), at most once per day.
+ */
+App.prototype.checkReleaseChannel = function(client)
+{
+	try
+	{
+		var user = (client != null) ? client.getUser() : null;
+		var email = (user != null) ? user.email : null;
+		var at = (email != null) ? email.lastIndexOf('@') : -1;
+
+		// The explicit ?channel= override wins for this session.
+		if (at < 0 || !isLocalStorage || !Editor.enableServiceWorker ||
+			!('serviceWorker' in navigator) || urlParams['channel'] != null)
+		{
+			return;
+		}
+
+		var ts = parseInt(localStorage.getItem('.drawio-channel-ts'), 10);
+		var elapsed = Date.now() - ts;
+
+		// A future timestamp (corrected clock) must expire, never freeze.
+		if (!isNaN(ts) && elapsed >= 0 && elapsed < 86400000)
+		{
+			return;
+		}
+
+		localStorage.setItem('.drawio-channel-ts', String(Date.now()));
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', 'channel');
+		xhr.setRequestHeader('Content-Type', 'application/json');
+
+		xhr.onload = mxUtils.bind(this, function()
+		{
+			try
+			{
+				var verdict = null;
+
+				if (xhr.status == 404 || xhr.status == 405)
+				{
+					// The endpoint is definitively gone (the zone origin
+					// answered in its place): the channel infrastructure was
+					// decommissioned, converge to the default channel.
+					verdict = 'beta';
+				}
+				else if (xhr.status >= 200 && xhr.status <= 299)
+				{
+					var result = JSON.parse(xhr.responseText);
+
+					// Only an explicit verdict changes the channel - a buggy
+					// 200 without one must not mass-demote pinned browsers.
+					// Transient errors (5xx, network) change nothing.
+					if (result != null && (result.channel == 'stable' ||
+						result.channel == 'beta'))
+					{
+						verdict = result.channel;
+					}
+				}
+
+				if (verdict != null)
+				{
+					var channel = (verdict == 'stable') ? 'stable' : null;
+
+					if (channel != App.getReleaseChannel())
+					{
+						EditorUi.debug('App.checkReleaseChannel',
+							'Switching channel', verdict);
+						App.setReleaseChannel(channel);
+						this.switchReleaseChannel();
+					}
+				}
+			}
+			catch (e)
+			{
+				// ignore
+			}
+		});
+
+		xhr.send(JSON.stringify({domain: email.substring(at + 1)}));
+	}
+	catch (e)
+	{
+		// ignore
+	}
+};
+
+/**
+ * Registers the service worker for the stored release channel. The new
+ * worker precaches the full channel before it activates; the page reloads
+ * only then, and only without unsaved changes (else the next start uses
+ * the new channel).
+ */
+App.prototype.switchReleaseChannel = function()
+{
+	try
+	{
+		var swUrl = (App.getReleaseChannel() == 'stable') ?
+			'stable/service-worker.js' : 'service-worker.js';
+
+		// Lets other open tabs reload (when clean) via controllerchange -
+		// normal release updates set no flag and never force reloads.
+		localStorage.setItem('.drawio-channel-switch-ts', String(Date.now()));
+
+		navigator.serviceWorker.register(swUrl, {scope: './'}).then(
+			mxUtils.bind(this, function(reg)
+		{
+			var track = mxUtils.bind(this, function(sw)
+			{
+				if (sw != null)
+				{
+					sw.addEventListener('statechange', mxUtils.bind(this, function()
+					{
+						if (sw.state == 'activated' && (this.getCurrentFile() == null ||
+							!this.getCurrentFile().isModified()))
+						{
+							window.location.reload();
+						}
+					}));
+				}
+			});
+
+			if (reg.installing != null)
+			{
+				track(reg.installing);
+			}
+			else
+			{
+				reg.addEventListener('updatefound', function()
+				{
+					track(reg.installing);
+				});
+			}
+		}), function(e)
+		{
+			// ignore
+		});
+	}
+	catch (e)
+	{
+		// ignore
+	}
+};
+
+/**
  * Checks license in the case of Google Drive storage.
- * IMPORTANT: Do not change this function without consulting 
+ * IMPORTANT: Do not change this function without consulting
  * the privacy lead. No personal information must be sent.
  */
 App.prototype.checkLicense = function()
@@ -2559,10 +2973,12 @@ App.prototype.getThumbnail = function(width, fn, border)
 
 			if (this.currentPage == page)
 			{
+				graph.mathEnabled = this.editor.graph.mathEnabled;
 				graph.setBackgroundImage(bgImg);
 			}
 			else if (page.viewState != null && page.viewState != null)
 			{
+				graph.mathEnabled = page.viewState.mathEnabled;
 				bgImg = page.viewState.backgroundImage;
 				graph.setBackgroundImage(bgImg);
 			}
@@ -3723,39 +4139,78 @@ App.prototype.executeCreateObject = function(value, done)
 							urlParams['grid'] == '1');
 					}
 
-					// Fits diagram to window
-					this.initialFitDiagram(1.2);
-
-					// Easter egg: pop effect animates all cells on load
-					if (value.effect == 'pop')
+					var finish = mxUtils.bind(this, function()
 					{
-						var graph = this.editor.graph;
-						var cells = graph.model.getDescendants(
-							graph.model.getRoot());
-						var nodes = graph.getNodesForCells(cells);
-						Graph.setOpacityForNodes(nodes, 0);
+						// Fits diagram to window
+						this.initialFitDiagram(1.2);
 
-						window.setTimeout(mxUtils.bind(this, function()
+						// Easter egg: pop effect animates all cells on load
+						if (value.effect == 'pop')
 						{
-							var animations = graph.createPopAnimations(
-								cells, true);
-							graph.executeAnimations(animations);
-						}), 200);
-					}
+							var graph = this.editor.graph;
+							var cells = graph.model.getDescendants(
+								graph.model.getRoot());
+							var nodes = graph.getNodesForCells(cells);
+							Graph.setOpacityForNodes(nodes, 0);
 
-					// Needs to go before upate of hash if
-					// it replaces the history state
-					if (done != null)
+							window.setTimeout(mxUtils.bind(this, function()
+							{
+								var animations = graph.createPopAnimations(
+									cells, true);
+								graph.executeAnimations(animations);
+							}), 200);
+						}
+
+						// Needs to go before upate of hash if
+						// it replaces the history state
+						if (done != null)
+						{
+							done();
+						}
+
+						// Sets create value with compressed XML. When a layout
+						// was applied, store the laid-out XML and drop the
+						// layout options so a reload reproduces the result
+						// without re-running them.
+						value.type = 'xml';
+						value.compressed = true;
+						value.data = Graph.compress((value.layout != null ||
+							value.applyLayouts) ?
+							mxUtils.getXml(this.editor.getGraphXml()) : xml);
+						delete value.layout;
+						delete value.applyLayouts;
+						window.location.hash = 'create=' +
+							encodeURIComponent(JSON.stringify(value));
+					});
+
+					// layout: run the requested layout (a preset name or
+					// custom-layout JSON, the same format as the desktop
+					// --layout flag and the embed "layout" action) before
+					// fitting so the view reflects the new positions.
+					var runLayout = mxUtils.bind(this, function()
 					{
-						done();
-					}
+						if (value.layout != null)
+						{
+							this.executeLayoutSpec(value.layout, finish);
+						}
+						else
+						{
+							finish();
+						}
+					});
 
-					// Sets create value with compressed XML
-					value.type = 'xml';
-					value.compressed = true;
-					value.data = Graph.compress(xml);
-					window.location.hash = 'create=' +
-						encodeURIComponent(JSON.stringify(value));
+					// applyLayouts: run the layouts defined in the diagram's
+					// childLayout styles (nested children before their parents)
+					// first, so a one-shot layout given via the layout option
+					// sees the containers at their final size.
+					if (value.applyLayouts)
+					{
+						this.applyChildLayouts(runLayout);
+					}
+					else
+					{
+						runLayout();
+					}
 				}), true, null, true);
 		});
 
@@ -3768,21 +4223,38 @@ App.prototype.executeCreateObject = function(value, done)
 
 		if (value.type == 'mermaid')
 		{
-			if (window.isMermaidEnabled)
+			if (EditorUi.isMermaidSupported())
 			{
-				this.parseMermaidDiagram(data, null, mxUtils.bind(this, function(xml)
-				{
-					createDiagram(xml);
-				}), mxUtils.bind(this, function(e)
+				var onMermaidError = mxUtils.bind(this, function(e)
 				{
 					this.handleError(e);
-				}), null, true);
+				});
+
+				if (value.image)
+				{
+					// image:true creates the diagram as a static SVG image cell
+					// (carrying the mermaid source for re-editing), matching the
+					// legacy image insert. New images follow the configured Mermaid
+					// config, or keep the legacy look when unset (parseMermaidImage).
+					this.parseMermaidImage(data, mxUtils.bind(this, function(xml)
+					{
+						createDiagram(xml);
+					}), onMermaidError);
+				}
+				else
+				{
+					this.parseMermaidDiagram(data, null, mxUtils.bind(this, function(xml)
+					{
+						createDiagram(mxMermaidToDrawio.wrapGroup(xml, data,
+							EditorUi.getInsertMermaidConfig()));
+					}), onMermaidError);
+				}
 			}
 			else
 			{
 				throw new Error(mxResources.get('serviceUnavailableOrBlocked'));
 			}
-		} 
+		}
 		else if (value.type == 'generate' && this.spinner.spin(
 			document.body, mxResources.get('generate') +
 			' \''+ data + '\''))
@@ -3793,7 +4265,7 @@ App.prototype.executeCreateObject = function(value, done)
 			}, mxUtils.bind(this, function(e)
 			{
 				this.handleError(e, mxResources.get('errorLoadingFile'));
-			}), true, {complexity: 'high'});
+			}), {complexity: 'high'});
 		}
 		else if (value.type == 'csv')
 		{
@@ -3831,8 +4303,8 @@ App.prototype.openGenerateDialog = function(prompt)
 		var saved = mxSettings.getWindowState('chat');
 		var cx = (saved != null && saved.x != null) ? saved.x : 224;
 		var cy = (saved != null && saved.y != null) ? saved.y : 104;
-		var cw = (saved != null && saved.w != null) ? saved.w : 360;
-		var ch = (saved != null && saved.h != null) ? saved.h : 480;
+		var cw = (saved != null && saved.w != null) ? saved.w : 440;
+		var ch = (saved != null && saved.h != null) ? saved.h : 440;
 
 		this.chatWindow = new ChatWindow(this, cx, cy, cw, ch);
 		this.chatWindow.window.addListener('show', mxUtils.bind(this, function()
@@ -5062,7 +5534,7 @@ App.prototype.saveFile = function(forceDialog, success)
 				}
 			}), (allowTab) ? null : ['_blank']);
 
-			this.showDialog(dlg.container, 420, 150, true, false, mxUtils.bind(this, function()
+			this.showDialog(dlg.container, 420, 162, true, false, mxUtils.bind(this, function()
 			{
 				this.hideDialog();
 			}));
@@ -5120,24 +5592,19 @@ App.prototype.loadTemplate = function(url, onload, onerror, templateFilename, as
 					onload(xml);
 				}, onerror, filterFn);
 			}
-			else if (new XMLHttpRequest().upload && this.isRemoteFileFormat(data, filterFn))
+			else if (this.isGliffyData(data, filterFn))
 			{
-				if (this.isExternalDataComms())
+				this.importGliffy(data, mxUtils.bind(this, function(xml)
 				{
-					// Asynchronous parsing via server
-					this.parseFileData(data, mxUtils.bind(this, function(xhr)
+					if (xml.substring(0, 13) == '<mxGraphModel')
 					{
-						if (xhr.readyState == 4 && xhr.status >= 200 && xhr.status <= 299 &&
-							xhr.responseText.substring(0, 13) == '<mxGraphModel')
-						{
-							onload(xhr.responseText);
-						}
-					}), url);
-				}
-				else
-				{
-					this.showError(mxResources.get('error'), mxResources.get('notInOffline'), null, onerror);
-				}
+						onload(xml);
+					}
+					else
+					{
+						onerror();
+					}
+				}), onerror, url);
 			}
 			else if (this.isLucidChartData(data))
 			{
@@ -6185,8 +6652,14 @@ App.prototype.loadLibraries = function(libs, done)
 			{
 				if (libs != null)
 				{
-					for (var i = libs.length - 1; i >= 0; i--)
+					// Entries are prepended in the sidebar so they must be
+					// loaded in reverse, or in-order if they are appended
+					var append = this.sidebar.appendCustomLibraries;
+
+					for (var j = 0; j < libs.length; j++)
 					{
+						var i = (append) ? j : libs.length - 1 - j;
+
 						if (files[i] != null)
 						{
 							try
@@ -6487,6 +6960,13 @@ App.prototype.updateButtonContainer = function(skipNotifications)
 					}));
 
 					this.buttonContainer.appendChild(this.commentButton);
+
+					// Shows the number of unresolved comments of the file
+					this.addCommentsBadge(this.commentButton);
+
+					// Dragging the button to the canvas starts a comment
+					// on the shape or point it is dropped on
+					this.installCommentDragSource(this.commentButton);
 				}
 
 				this.commentButton.style.display = (this.commentsSupported()) ? '' : 'none';
@@ -6530,8 +7010,11 @@ App.prototype.updateButtonContainer = function(skipNotifications)
 					this.userButton = document.createElement('a');
 					this.userButton.className = 'geButton geRoundButton';
 
-					// User avatar
-					var userImg = document.createElement('img');
+					// User avatar (a div using a background-image rather than an
+					// <img> so the default account icon adapts in dark mode via the
+					// same geAdaptiveAsset pattern as other toolbar icons — see #5364)
+					var userImg = document.createElement('div');
+					userImg.className = 'geUserAvatar';
 					this.userButton.appendChild(userImg);
 
 					mxEvent.addListener(this.userButton, 'click', mxUtils.bind(this, function(evt)
@@ -6559,8 +7042,8 @@ App.prototype.updateButtonContainer = function(skipNotifications)
 				if (!this.unloading)
 				{
 					// Updates user image
-					var userImg = this.userButton.getElementsByTagName('img')[0];
-					var syncImg = this.userButton.getElementsByTagName('img')[1];
+					var userImg = this.userButton.getElementsByClassName('geUserAvatar')[0];
+					var syncImg = this.userButton.getElementsByTagName('img')[0];
 					var title = mxResources.get('changeUser');
 					var user = this.getMainUser();
 
@@ -6572,14 +7055,16 @@ App.prototype.updateButtonContainer = function(skipNotifications)
 					if (user != null && user.pictureUrl != null)
 					{
 						userImg.classList.remove('geAdaptiveAsset');
-						userImg.src = user.pictureUrl;
+						userImg.classList.add('geUserPhoto');
+						userImg.style.backgroundImage = 'url(' + user.pictureUrl + ')';
 						syncImg.style.top = '3px';
 						syncImg.style.right = '0';
 					}
 					else
 					{
+						userImg.classList.remove('geUserPhoto');
 						userImg.classList.add('geAdaptiveAsset');
-						userImg.src = Editor.userImage;
+						userImg.style.backgroundImage = 'url(' + Editor.userImage + ')';
 						syncImg.style.top = '6px';
 						syncImg.style.right = '4px';
 					}
@@ -7496,20 +7981,16 @@ App.prototype.convertFile = function(url, filename, mimeType, extension, success
 						success(new LocalFile(this, data, filename, true));
 					}
 				}
-				else if (Graph.fileSupport && new XMLHttpRequest().upload && this.isRemoteFileFormat(data, url))
+				else if (Graph.fileSupport && this.isGliffyData(data, url))
 				{
-					this.parseFileData(data, mxUtils.bind(this, function(xhr)
+					this.importGliffy(data, mxUtils.bind(this, function(xml)
 					{
-						if (xhr.readyState == 4)
+						success(new LocalFile(this, xml, name, true));
+					}), mxUtils.bind(this, function(err)
+					{
+						if (error != null)
 						{
-							if (xhr.status >= 200 && xhr.status <= 299)
-							{
-								success(new LocalFile(this, xhr.responseText, name, true));
-							}
-							else if (error != null)
-							{
-								error({message: mxResources.get('errorLoadingFile')});
-							}
+							error({message: mxResources.get('errorLoadingFile')});
 						}
 					}), filename);
 				}
@@ -7883,6 +8364,10 @@ App.prototype.getMainUser = function()
 	else if (this.oneDrive != null && this.oneDrive.getUser() != null)
 	{
 		user = this.oneDrive.getUser();
+	}
+	else if (this.m365 != null && this.m365.getUser() != null)
+	{
+		user = this.m365.getUser();
 	}
 	else if (this.dropbox != null && this.dropbox.getUser() != null)
 	{
@@ -8276,14 +8761,14 @@ App.prototype.toggleUserPanel = function()
 			{
 				var file = this.getCurrentFile();
 
-				if (file != null && file.constructor == OneDriveFile)
+				if (file != null && file.constructor == OneDriveFile && !file.isSP)
 				{
 					var doLogout = mxUtils.bind(this, function()
 					{
 						this.oneDrive.logout();
 						window.location.hash = '';
 					});
-					
+
 					if (!file.isModified())
 					{
 						doLogout();
@@ -8299,6 +8784,37 @@ App.prototype.toggleUserPanel = function()
 					this.oneDrive.logout();
 				}
 			}), mxResources.get('oneDrive'));
+		}
+
+		if (this.m365 != null)
+		{
+			addUser(this.m365.getUser(), IMAGE_PATH + '/onedrive-logo.svg', this.m365.noLogout? null : mxUtils.bind(this, function()
+			{
+				var file = this.getCurrentFile();
+
+				if (file != null && file.constructor == OneDriveFile && file.isSP)
+				{
+					var doLogout = mxUtils.bind(this, function()
+					{
+						this.m365.logout();
+						window.location.hash = '';
+					});
+
+					if (!file.isModified())
+					{
+						doLogout();
+					}
+					else
+					{
+						this.confirm(mxResources.get('allChangesLost'), null, doLogout,
+							mxResources.get('cancel'), mxResources.get('discardChanges'));
+					}
+				}
+				else
+				{
+					this.m365.logout();
+				}
+			}), mxResources.get('m365'));
 		}
 
 		if (this.gitHub != null)
@@ -8438,6 +8954,10 @@ App.prototype.getCurrentUser = function()
 	else if (this.oneDrive != null && this.oneDrive.getUser() != null)
 	{
 		user = this.oneDrive.getUser();
+	}
+	else if (this.m365 != null && this.m365.getUser() != null)
+	{
+		user = this.m365.getUser();
 	}
 	else if (this.dropbox != null && this.dropbox.getUser() != null)
 	{

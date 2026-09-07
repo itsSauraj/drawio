@@ -8,7 +8,116 @@
 	 * Version
 	 */
 	EditorUi.VERSION = '@DRAWIO-VERSION@';
-	
+
+	/**
+	 * Maps CSV `# layout: <name>` shorthands to a {layout, config} entry that
+	 * createLayouts() instantiates as an ElkLayout. Used by importCsv; also
+	 * referenced in the default CSV comment text.
+	 *
+	 * verticalflow / horizontalflow used to dispatch to mxHierarchicalLayout
+	 * and were retired here to consolidate hierarchical routing on ELK.
+	 * Four tunings make ELK's output match the legacy
+	 * mxHierarchicalLayout look on the default CSV:
+	 *
+	 *   - `elk.layered.layering.strategy: LONGEST_PATH` — ELK's default
+	 *     for layered is NETWORK_SIMPLEX, which packs as many nodes as
+	 *     possible into the same rank to minimize layer count. The
+	 *     legacy layout's longest-path layering instead lets nodes drop
+	 *     to the bottom of their longest reachability chain, which is
+	 *     what spreads Alison into her own rank (because she has
+	 *     outgoing edges to Edward + Evan) and reproduces the 3-rank
+	 *     orgchart shape.
+	 *   - `elk.layered.nodePlacement.bk.fixedAlignment: BALANCED` —
+	 *     BRANDES_KOEPF placement is already the default, but its
+	 *     default sub-alignment is `NONE` (ELK picks one of LEFTUP /
+	 *     RIGHTUP / LEFTDOWN / RIGHTDOWN by heuristic). `BALANCED`
+	 *     averages all four, which centers each node over its children
+	 *     — Tessa and Alison end up vertically aligned, Edward and
+	 *     Evan symmetric around the same spine. Matches the legacy
+	 *     layout's centered-around-the-spine look.
+	 *   - `elk.edgeRouting: POLYLINE` — produces exactly the same
+	 *     waypoint count as the target XML (4 for Tessa→Edward/Evan,
+	 *     2 for Tessa→Alison and Alison→Edward/Evan), with a vertical
+	 *     channel at x≈74 (target was x≈89) outside Alison's bbox. With
+	 *     the CSV's `curved=1` rendering this smooths into the same
+	 *     diagonal-vertical-diagonal shape as the target. Verified via
+	 *     the elk-test.html harness against the dev-branch
+	 *     mxHierarchicalLayout output. ORTHOGONAL produced visible
+	 *     stairsteps with extra horizontal jogs; SPLINES output a
+	 *     near-identical shape but with ~13 collinear waypoints per
+	 *     cross-rank edge instead of 4. The earlier "wavy" reports
+	 *     came from `edgeStyle: 'auto'` upgrading edges to
+	 *     `orthogonalEdgeStyle` (SegmentConnector); we avoid that here
+	 *     via `edgeStyle: 'elkCompat'` (next bullet).
+	 *   - `edgeStyle: 'elkCompat'` — sets `noEdgeStyle=1` (so the edge
+	 *     uses ELK's waypoints directly), preserves `curved=1` from the
+	 *     CSV connect style, and skips the SegmentConnector upgrade.
+	 *   - `includeEdgeLabels: false` — tells the bridge not to emit
+	 *     mxGraph edge labels as ELK label objects. The bridge's default
+	 *     +14px padding (to prevent label-label overlap on parallel
+	 *     edges) ends up tripling the inter-rank spacing for orgcharts
+	 *     with short labels like "manages"; mxGraph places the labels
+	 *     at edge midpoints afterward, independently of the layout, so
+	 *     ELK doesn't need to know about them. With this off the
+	 *     resulting Tessa→Alison rank gap matches the legacy
+	 *     mxHierarchicalLayout output to within a few pixels.
+	 *   - `portSpread: true` — runs a post-layout port-spread pass that
+	 *     pushes parallel exit/entry ports further from each node's
+	 *     center. ELK's BRANDES_KOEPF places ports at evenly-spaced
+	 *     positions (25/50/75 for three, 33/67 for two) regardless of
+	 *     where the targets sit; mxHierarchicalLayout shifts them toward
+	 *     the half of the node closest to each target. The spread pass
+	 *     multiplies each port's offset-from-center by ~1.3, which lands
+	 *     within ~2pp of the reference layout. See
+	 *     ElkApplier._spreadPorts for the rationale.
+	 *   - `resizeNodes: false` — keep the autosized widths/heights from
+	 *     `getPreferredSizeForCell` instead of letting the applier
+	 *     overwrite them with ELK's `child.width` / `child.height`.
+	 *     ELK pads its node boxes for routing channels, so the default
+	 *     `resizeParent: true` widened Edward from 198 (autosize → minus
+	 *     padding) to 215. CSV imports never contain compound parents
+	 *     that genuinely need ELK to resize them — turning the resize
+	 *     off pins cells at their measured sizes.
+	 *
+	 * Spacing options (`elk.spacing.nodeNode`, the
+	 * between-layers / between-edges variants) are *not* set here —
+	 * doImportCsv layers them on top at dispatch time using the CSV's
+	 * own `# nodespacing` / `# levelspacing` / `# edgespacing` knobs,
+	 * matching what mxHierarchicalLayout did via
+	 * intraCellSpacing / interRankCellSpacing / parallelEdgeSpacing.
+	 *
+	 * The two tree keys (verticaltree / horizontaltree) still live in
+	 * doImportCsv on mxCompactTreeLayout — ELK's mrtree output didn't
+	 * match the legacy look closely enough.
+	 */
+	EditorUi.CSV_ELK_LAYOUTS = {
+		'verticalflow':   {layout: 'elkLayered', config: {
+			'elk.direction': 'DOWN',
+			'elk.layered.layering.strategy': 'LONGEST_PATH',
+			'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
+			'elk.edgeRouting': 'POLYLINE',
+			edgeStyle: 'elkCompat',
+			includeEdgeLabels: false,
+			includeVertexLabels: false,
+			portSpread: true,
+			resizeNodes: false
+		}},
+		'horizontalflow': {layout: 'elkLayered', config: {
+			'elk.direction': 'RIGHT',
+			'elk.layered.layering.strategy': 'LONGEST_PATH',
+			'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
+			'elk.edgeRouting': 'POLYLINE',
+			edgeStyle: 'elkCompat',
+			includeEdgeLabels: false,
+			includeVertexLabels: false,
+			portSpread: true,
+			resizeNodes: false
+		}},
+		'elkRadial':  {layout: 'elkRadial',  config: {edgeStyle: 'elkCompat'}},
+		'elkOrganic': {layout: 'elkOrganic', config: {edgeStyle: 'elkCompat'}},
+		'elkStress':  {layout: 'elkStress',  config: {edgeStyle: 'elkCompat'}}
+	};
+
 	/**
 	 * Overrides compact UI setting.
 	 */
@@ -59,6 +168,18 @@
 	EditorUi.templateFile = TEMPLATE_PATH + '/index.xml';
 
 	/**
+	 * Specifies the sections of the templates index file to be shown in
+	 * the templates dialog. Null means all sections are visible.
+	 */
+	EditorUi.enabledTemplateSections = null;
+
+	/**
+	 * Specifies additional templates to be added to the sections of the
+	 * templates dialog. Null means no additional templates are added.
+	 */
+	EditorUi.customTemplates = null;
+
+	/**
 	 * Specifies the URL for the diffsync cache.
 	 */
 	EditorUi.cacheUrl = window.REALTIME_URL;
@@ -76,12 +197,6 @@
 	 */
 	Editor.cacheTimeout = 10000;
 
-	/**
-	 * Switch to enable PlantUML in the insert from text dialog.
-	 * NOTE: This must also be enabled on the server-side.
-	 */
-	EditorUi.enablePlantUml = EditorUi.enableLogging || urlParams['dev'] == '1';
-	
 	/**
 	 * https://github.com/electron/electron/issues/2288
 	 */
@@ -112,16 +227,55 @@
 	EditorUi.enableHtmlEditOption = true;
  
 	/**
-	 * Default Mermaid config without using foreign objects in flowcharts.
+	 * Returns true when Mermaid support is usable. This is the central
+	 * feature gate for all Mermaid entry points (insert dialog and menu,
+	 * AI generation, embed descriptors, double-click edit, headless
+	 * export): the browser must support structuredClone (isMermaidEnabled,
+	 * see Init.js) and the native parser must be loaded with its parseText
+	 * API. Checking parseText (not just mxMermaidToDrawio) matters: stale
+	 * extensions.min.js artifacts built before the native-parser switch
+	 * define a legacy mxMermaidToDrawio bridge without it, so a bare
+	 * typeof check advertises features that fail on use.
 	 */
-	EditorUi.mermaidDiagramTypes = ['flowchart', 'classDiagram', 'sequenceDiagram',
-		'stateDiagram', 'mindmap', 'graph', 'erDiagram', 'requirementDiagram',
-		'journey', 'gantt', 'pie', 'gitGraph'];
+	EditorUi.isMermaidSupported = function()
+	{
+		return window.isMermaidEnabled &&
+			typeof mxMermaidToDrawio !== 'undefined' &&
+			typeof mxMermaidToDrawio.parseText === 'function';
+	};
+
+	/**
+	 * Returns true if the native PlantUML converter (drawio-plantuml) is
+	 * loaded with its parseText API. Gates all PlantUML outputs (the
+	 * editable "Diagram" group and the client-rendered "Image") — parsing
+	 * happens locally, so no PlantUML server or network access is needed.
+	 */
+	EditorUi.isNativePlantUmlSupported = function()
+	{
+		return typeof mxPlantUmlToDrawio !== 'undefined' &&
+			typeof mxPlantUmlToDrawio.parseText === 'function';
+	};
+
+	/**
+	 * Returns true if the native Gliffy converter (drawio-gliffy) is
+	 * loaded with its convert API. Conversion happens locally, so no
+	 * conversion service or network access is needed.
+	 */
+	EditorUi.isNativeGliffySupported = function()
+	{
+		return typeof mxGliffyToDrawio !== 'undefined' &&
+			typeof mxGliffyToDrawio.convert === 'function';
+	};
 
 	/**
 	 * Default Mermaid config without using foreign objects in flowcharts.
 	 */
-	EditorUi.defaultMermaidConfig = {
+	EditorUi.defaultMermaidConfig = {};
+
+	/**
+	 * Config for mermaid images (from previous versions).
+	 */
+	EditorUi.legacyMermaidConfig = {
 		theme:'neutral',
 		arrowMarkerAbsolute:false,
 	    sequence:
@@ -156,6 +310,46 @@
 	    	axisFormat:'%Y-%m-%d'
 	    }
 	};
+
+	/**
+	 * Returns the Mermaid config to store in a newly inserted diagram cell (and
+	 * a configured image): a clone of the configured default
+	 * (EditorUi.defaultMermaidConfig, set via the `mermaid` config key) when one
+	 * is set, else **null**. Storing the config makes the cell self-describing so
+	 * it renders the same across deployments instead of adopting whatever default
+	 * is active where it is next edited. Returning null when unconfigured keeps
+	 * the previous behavior byte-for-byte (cells store config:null, like before
+	 * the config key existed), so a deployment that sets no `mermaid` config sees
+	 * no change at all. The security keys (securityLevel, startOnLoad,
+	 * maxTextSize) are re-applied per parse by getMermaidConfig, so they are not
+	 * stored here; parsing with a null config resolves to the same default.
+	 */
+	EditorUi.getInsertMermaidConfig = function()
+	{
+		return EditorUi.isMermaidConfigured() ?
+			mxUtils.clone(EditorUi.defaultMermaidConfig) : null;
+	};
+
+	/**
+	 * Returns true when a Mermaid config has been set via the `mermaid` config
+	 * key (a non-empty EditorUi.defaultMermaidConfig). Used to decide whether a
+	 * new image follows that config or keeps the previous image look
+	 * (legacyMermaidConfig) - see parseMermaidImage.
+	 */
+	EditorUi.isMermaidConfigured = function()
+	{
+		return EditorUi.defaultMermaidConfig != null &&
+			Object.keys(EditorUi.defaultMermaidConfig).length > 0;
+	};
+
+	/**
+	 * Default padding (px) drawn around mermaid image cells, matching the
+	 * groupPadding of the editable wrapper groups (mxMermaidToDrawio and
+	 * mxPlantUmlToDrawio groupStyle — keep in sync) so both output types
+	 * show the same margin. Overridable per cell via the groupPadding
+	 * style (legacy image cells: the stored mermaidData `border` field).
+	 */
+	EditorUi.mermaidImageBorder = 10;
 
 	/**
 	 * Updates action states depending on the selection.
@@ -365,11 +559,28 @@
 			{
 				var w = svg.getAttribute('width');
 				var h = svg.getAttribute('height');
-				svg.setAttribute('x', node.getAttribute('x'));
-				svg.setAttribute('y', node.getAttribute('y'));
+
+				// Positions are undefined for image definitions in defs
+				if (node.hasAttribute('x'))
+				{
+					svg.setAttribute('x', node.getAttribute('x'));
+				}
+
+				if (node.hasAttribute('y'))
+				{
+					svg.setAttribute('y', node.getAttribute('y'));
+				}
+
 				svg.setAttribute('width', node.getAttribute('width'));
 				svg.setAttribute('height', node.getAttribute('height'));
 				svg.style.fontFamily = 'initial';
+
+				// Keeps the aspect handling of the replaced image
+				if (node.getAttribute('preserveAspectRatio') != null)
+				{
+					svg.setAttribute('preserveAspectRatio',
+						node.getAttribute('preserveAspectRatio'));
+				}
 
 				// Handles existing width and height
 				if (w > 0 && h > 0 && svg.getAttribute('viewBox') == null)
@@ -382,9 +593,20 @@
 					mxConstants.NS_SVG, 'g');
 				group.appendChild(svg);
 
+				// Keeps the ID of images that are shared via use tags
+				if (node.hasAttribute('id'))
+				{
+					group.setAttribute('id', node.getAttribute('id'));
+				}
+
 				if (node.hasAttribute('transform'))
 				{
 					group.setAttribute('transform', node.getAttribute('transform'));
+				}
+				
+				if (node.hasAttribute('opacity'))
+				{
+					group.setAttribute('opacity', node.getAttribute('opacity'));
 				}
 				
 				node.parentNode.replaceChild(group, node);
@@ -606,13 +828,28 @@
 	EditorUi.prototype.maxTextBytes = 500000;
 
 	/**
+	 * Maximum number of pages in the print output. This bounds the print
+	 * preview so that extreme cell coordinates cannot block the UI.
+	 */
+	EditorUi.prototype.maxPrintPageCount = 1000;
+
+	/**
+	 * Maximum canvas area in pixels for image exports in embed mode. If an
+	 * export exceeds this area at the requested scale, the scale is reduced
+	 * until the output fits within the budget, so that generating the image
+	 * cannot crash the browser tab by running out of memory. 67108864 is
+	 * 8192 x 8192 px, ie. 256 MB of RGBA pixel data. Use 0 to disable.
+	 */
+	EditorUi.prototype.maxCanvasExportArea = 67108864;
+
+	/**
 	 * Holds the current file.
 	 */
 	EditorUi.prototype.currentFile = null;
 
 	/**
-	 * Specifies if PDF export should be done via print dialog. Default is
-	 * false which uses the PhantomJS backend to create the PDF.
+	 * Forces PDF export via the print dialog. Default is false, which uses
+	 * the export service if one is available (see isPrintPdfExport).
 	 */
 	EditorUi.prototype.printPdfExport = false;
 	
@@ -758,6 +995,12 @@
 	{
 		this.shareCursorPosition = value;
 
+		if (Editor.isSettingsEnabled())
+		{
+			mxSettings.settings.shareCursorPosition = value;
+			mxSettings.save();
+		}
+
 		this.fireEvent(new mxEventObject('shareCursorPositionChanged'));
 	};
 
@@ -775,6 +1018,12 @@
 	EditorUi.prototype.setShowRemoteCursors = function(value)
 	{
 		this.showRemoteCursors = value;
+
+		if (Editor.isSettingsEnabled())
+		{
+			mxSettings.settings.showRemoteCursors = value;
+			mxSettings.save();
+		}
 
 		this.fireEvent(new mxEventObject('showRemoteCursorsChanged'));
 	};
@@ -852,7 +1101,32 @@
 	 */
 	EditorUi.prototype.isOffline = function(ignoreStealth)
 	{
-		return this.isOfflineApp() || !navigator.onLine || (!ignoreStealth && (urlParams['stealth'] == '1' || urlParams['lockdown'] == '1'));
+		// navigator.onLine is false on systems with no network interface so is
+		// ignored in the desktop app where all resources are local
+		return this.isOfflineApp() || (!navigator.onLine && !EditorUi.isElectronApp) ||
+			(!ignoreStealth && (urlParams['stealth'] == '1' || urlParams['lockdown'] == '1'));
+	};
+
+	/**
+	 * Returns true if a server-side export service is configured and the app
+	 * is not offline. EXPORT_URL must be an absolute HTTP(S) or root-relative
+	 * URL. Null, empty and other values (such as the placeholder in the
+	 * PreConfig.js of the public build) mean that no service is available.
+	 */
+	EditorUi.prototype.isRemoteExportEnabled = function()
+	{
+		return !this.isOffline() && typeof EXPORT_URL === 'string' &&
+			/^(https?:\/\/|\/)/i.test(EXPORT_URL);
+	};
+
+	/**
+	 * Returns true if PDF export should use the print dialog instead of the
+	 * export service. This is the case if printPdfExport is set or if no
+	 * export service is available.
+	 */
+	EditorUi.prototype.isPrintPdfExport = function()
+	{
+		return this.printPdfExport || !this.isRemoteExportEnabled();
 	};
 
 	/**
@@ -1320,12 +1594,222 @@
 			
 			data = Graph.zapGremlins(data);
 		}
-		
+
 		return data;
 	};
-	
+
 	/**
-	 * 
+	 * Best-effort repair of corrupt file data. Applies conservative, unambiguous
+	 * fixes only, then returns the repaired string (or null if nothing changed):
+	 *
+	 * 1. Missing ">" on a closing tag that is immediately followed by another
+	 *    tag (eg. "</mxGraphModel\n</diagram>"). Closing tags have no attributes,
+	 *    so the insertion point is unambiguous. Opening tags are deliberately not
+	 *    touched - guessing where a ">" goes among attributes risks producing
+	 *    well-formed but semantically wrong XML.
+	 * 2. Truncation (the common crash/sync-mid-write case): drop a trailing
+	 *    incomplete tag fragment, then append a closing tag for every element
+	 *    still open at the end of the document (eg. a missing </diagram></mxfile>).
+	 *
+	 * Every candidate is re-validated by the caller via isFileDataLoadable, so a
+	 * fix that does not actually yield a loadable file is never offered.
+	 */
+	EditorUi.prototype.repairFileData = function(data)
+	{
+		var original = mxUtils.trim(data || '');
+
+		if (original.length == 0)
+		{
+			return null;
+		}
+
+		// Fix 1: missing ">" on closing tags followed by another tag
+		var repaired = original.replace(/<\/([A-Za-z_][\w.\-]*)(\s*)(?=<)/g, '</$1>$2');
+
+		// Fix 2: drop a trailing incomplete tag fragment (file cut mid-tag)
+		var lastGt = repaired.lastIndexOf('>');
+		var lastLt = repaired.lastIndexOf('<');
+
+		if (lastLt > lastGt)
+		{
+			repaired = mxUtils.trim(repaired.substring(0, lastGt + 1));
+		}
+
+		// Fix 3: append a closing tag for every element still open at EOF, by
+		// walking the (complete) tags and tracking the open-element stack
+		if (repaired.substring(repaired.length - 9) != '</mxfile>')
+		{
+			var stack = [];
+			var tagRe = /<(\/?)([A-Za-z_][\w.\-]*)[^>]*?(\/?)>/g;
+			var match;
+
+			while ((match = tagRe.exec(repaired)) != null)
+			{
+				if (match[1] == '/')
+				{
+					// Closing tag - pop if it matches the open element
+					if (stack.length > 0 && stack[stack.length - 1] == match[2])
+					{
+						stack.pop();
+					}
+				}
+				else if (match[3] != '/')
+				{
+					// Opening (non-self-closing) tag
+					stack.push(match[2]);
+				}
+			}
+
+			for (var i = stack.length - 1; i >= 0; i--)
+			{
+				repaired += '</' + stack[i] + '>';
+			}
+		}
+
+		return (repaired != original) ? repaired : null;
+	};
+
+	/**
+	 * Returns true if the given file data would load, ie. parses without a
+	 * parser error and yields a graph model node. Mirrors the front of
+	 * setFileData so it accepts exactly what setFileData would accept. Used to
+	 * validate recovery candidates so a recovery action never re-shows the same
+	 * load error.
+	 */
+	EditorUi.prototype.isFileDataLoadable = function(data)
+	{
+		try
+		{
+			data = this.validateFileData(data);
+			var node = (data != null && data.length > 0) ?
+				mxUtils.parseXml(data).documentElement : null;
+
+			if (node == null || Editor.extractParserError(node) != null)
+			{
+				return false;
+			}
+
+			var tmp = this.editor.extractGraphModel(node, true);
+
+			return ((tmp != null) ? tmp : node) != null;
+		}
+		catch (e)
+		{
+			return false;
+		}
+	};
+
+	/**
+	 * Probes for best-effort recovery candidates for a file that failed to load
+	 * and invokes callback with an ordered array of candidates (may be empty).
+	 * Each candidate is {type, label, description, data, lossy, date?}. Order is
+	 * lossless-first: a prior known-good version (file.getRecoveryVersion - the
+	 * desktop .bkp backup or a cloud revision) comes before the lossy in-memory
+	 * repair. Asynchronous (callback-based) because the version source may read
+	 * from disk or a remote provider.
+	 */
+	EditorUi.prototype.getRecoveryData = function(file, data, error, callback)
+	{
+		// Sync in-memory repair candidate (lossy)
+		var repair = null;
+
+		try
+		{
+			var repaired = this.repairFileData(data);
+
+			if (repaired != null && repaired != data && this.isFileDataLoadable(repaired))
+			{
+				repair = {type: 'repair', label: mxResources.get('openRepairedCopy'),
+					description: mxResources.get('recoveryRepairedDesc'), data: repaired, lossy: true};
+			}
+		}
+		catch (e)
+		{
+			// ignore, no repair candidate
+		}
+
+		var done = mxUtils.bind(this, function(version)
+		{
+			var candidates = [];
+
+			// Lossless prior-good version first, lossy repair last
+			if (version != null && version.data != null)
+			{
+				candidates.push(version);
+			}
+
+			if (repair != null)
+			{
+				candidates.push(repair);
+			}
+
+			callback(candidates);
+		});
+
+		// Asks the file for a prior known-good version (backup / cloud revision)
+		if (file != null && typeof file.getRecoveryVersion === 'function')
+		{
+			file.getRecoveryVersion(mxUtils.bind(this, function(version)
+			{
+				done(version);
+			}), mxUtils.bind(this, function()
+			{
+				done(null);
+			}));
+		}
+		else
+		{
+			done(null);
+		}
+	};
+
+	/**
+	 * Opens a recovery candidate as a new unsaved copy and marks it modified so
+	 * the unsaved status prompts the user to save it. The original file is never
+	 * overwritten (the copy is a temp LocalFile with no fileObject/handle).
+	 */
+	EditorUi.prototype.openRecoveredCopy = function(candidate, title)
+	{
+		var tempFile = new LocalFile(this, candidate.data,
+			mxResources.get('copyOf', [title || this.defaultFilename]), true);
+
+		if (this.fileLoaded(tempFile))
+		{
+			tempFile.fileChanged();
+		}
+	};
+
+	/**
+	 * Shows the recovery chooser for the given candidates (2 or more). Selecting
+	 * a candidate opens it as an unsaved copy via openRecoveredCopy.
+	 */
+	EditorUi.prototype.showRecoveryDialog = function(candidates, title)
+	{
+		var dlg = new RecoveryDialog(this, candidates, mxUtils.bind(this, function(candidate)
+		{
+			this.hideDialog();
+			this.openRecoveredCopy(candidate, title);
+		}), mxUtils.bind(this, function()
+		{
+			this.hideDialog();
+		}));
+
+		this.showDialog(dlg.container, 380, null, true, true);
+	};
+
+	/**
+	 * Formats a revision timestamp for a recovery label, or returns null if the
+	 * timestamp is invalid (workaround for negative timestamps in Dropbox).
+	 */
+	EditorUi.prototype.formatRecoveryDate = function(modifiedDate)
+	{
+		var ts = new Date(modifiedDate);
+
+		return (!isNaN(ts.getTime()) && ts.getTime() >= 0) ? ts.toLocaleString() : null;
+	};
+
+	/**
+	 *
 	 */
 	EditorUi.prototype.replaceFileData = function(data, patches)
 	{
@@ -1566,7 +2050,8 @@
 				var props = this.getSvgFileProperties(fileNode);
 
 				xml = this.getEmbeddedSvg(xml, graph, url, null, embeddedCallback, ignoreSelection,
-					redirect, null, null, props.scale, props.border, null, Editor.svgFileTheme);
+					redirect, null, null, props.scale, props.border, null, Editor.svgFileTheme,
+					null, props.embedFonts);
 			}
 			
 			return xml;
@@ -1829,7 +2314,10 @@
 	 */
 	EditorUi.prototype.anonymizePatch = function(patch)
 	{
-		patch = mxUtils.clone(patch);
+		// Patches are JSON and their id-keyed maps have null prototypes, for which
+		// mxUtils.clone returns null (it needs a callable constructor), so it would
+		// blank this whole report. JSON round-trip is a faithful deep copy here.
+		patch = JSON.parse(JSON.stringify(patch));
 
 		if (patch[EditorUi.DIFF_INSERT] != null)
 		{
@@ -2397,7 +2885,7 @@
 				try
 				{
 					var layerIds = decodeURIComponent(urlParams['layer-ids']).split(' ');
-					var layerIdsMap = {};
+					var layerIdsMap = Object.create(null);
 					
 					for (var i = 0; i < layerIds.length; i++)
 					{
@@ -2527,6 +3015,7 @@
 	 * @param {number} dx X-coordinate of the translation.
 	 * @param {number} dy Y-coordinate of the translation.
 	 */
+	// Note: Remember to adjust ElectronApp override when this function is modified
 	EditorUi.prototype.getBaseFilename = function(ignorePageName)
 	{
 		var file = this.getCurrentFile();
@@ -2561,7 +3050,7 @@
 	 */
 	EditorUi.prototype.downloadFile = function(format, uncompressed, addShadow, ignoreSelection,
 		currentPage, pageVisible, transparent, scale, border, grid, includeXml, pageRange, margin,
-		fit, sheetsAcross, sheetsDown, shadows)
+		fit, sheetsAcross, sheetsDown, shadows, icons)
 	{
 		try
 		{
@@ -2660,7 +3149,7 @@
 					{
 						var req = this.createDownloadRequest(filename, format, ignoreSelection, '1',
 							transparent, currentPage, scale, border, grid, includeXml, pageRange, w, h,
-							!pageVisible, margin, fit, sheetsAcross, sheetsDown, shadows);
+							!pageVisible, margin, fit, sheetsAcross, sheetsDown, shadows, icons);
 
 						req.send(mxUtils.bind(this, function(req)
 						{
@@ -2694,7 +3183,7 @@
 						{
 							var req = this.createDownloadRequest(newTitle, format, ignoreSelection, base64,
 								transparent, currentPage, scale, border, grid, includeXml, pageRange, w, h,
-								!pageVisible, margin, fit, sheetsAcross, sheetsDown, shadows);
+								!pageVisible, margin, fit, sheetsAcross, sheetsDown, shadows, icons);
 
 							return req;
 						}
@@ -2715,11 +3204,11 @@
 	// Note: Remember to adjust ElectronApp override when this function is modified
 	EditorUi.prototype.createDownloadRequest = function(filename, format, ignoreSelection, base64,
 		transparent, currentPage, scale, border, grid, includeXml, pageRange, w, h, crop, margin,
-		fit, sheetsAcross, sheetsDown, shadows)
+		fit, sheetsAcross, sheetsDown, shadows, icons)
 	{
 		var params = this.downloadRequestBuilder(filename, format, ignoreSelection, base64,
 			transparent, currentPage, scale, border, grid, includeXml, pageRange, w, h, crop,
-			margin, fit, sheetsAcross, sheetsDown, shadows);
+			margin, fit, sheetsAcross, sheetsDown, shadows, icons);
 		var paramsStr = '';
 
 		for (var p in params)
@@ -2743,7 +3232,7 @@
 	 */
 	EditorUi.prototype.downloadRequestBuilder = function(filename, format, ignoreSelection, base64,
 		transparent, currentPage, scale, border, grid, includeXml, pageRange, w, h, crop, margin,
-		fit, sheetsAcross, sheetsDown, shadows)
+		fit, sheetsAcross, sheetsDown, shadows, icons)
 	{
 		var graph = this.editor.graph;
 		var bounds = graph.getGraphBounds();
@@ -2859,7 +3348,8 @@
 			fit: (fit != null && fit) ? '1' : '0',
 			shadows: (shadows != null && shadows) ? '1' : '0',
 			sheetsAcross: sheetsAcross,
-			sheetsDown: sheetsDown
+			sheetsDown: sheetsDown,
+			icons: (icons != null && icons) ? '1' : '0'
 		};
 	};
 	
@@ -3655,6 +4145,22 @@
 				this.editor.fireEvent(new mxEventObject('fileLoaded'));
 				result = true;
 
+				// Loads fonts into the local cache for saving
+				// SVG files with embedded fonts
+				if (/(\.svg)$/i.test(file.getTitle()) &&
+					this.getSvgFileProperties(this.fileNode).embedFonts)
+				{
+					try
+					{
+						this.editor.loadFonts();
+						this.editor.embedExtFonts(function() { });
+					}
+					catch (e)
+					{
+						// ignore
+					}
+				}
+
 				if (!this.isOffline() && file.getMode() != null)
 				{
 					var theme = (urlParams['sketch'] == '1') ? 'sketch' : uiTheme;
@@ -3707,10 +4213,23 @@
 			catch (e)
 			{
 				this.fileLoadedError = e;
-				
+
+				// Captures data and title for best-effort recovery before the file is closed
+				var recoveryData = null, recoveryTitle = this.defaultFilename;
+
 				// Disconnects file from UI
 				if (file != null)
 				{
+					try
+					{
+						recoveryData = file.getData();
+						recoveryTitle = file.getTitle() || this.defaultFilename;
+					}
+					catch (e2)
+					{
+						// ignore
+					}
+
 					try
 					{
 						file.close();
@@ -3759,6 +4278,15 @@
 				
 				if (!noDialogs)
 				{
+					// Slightly wider than the default 340 to avoid an awkward wrap
+					// of the long parser error message on this file-load path
+					e.dialogWidth = 350;
+
+					var showErr = mxUtils.bind(this, function()
+					{
+						this.handleError(e, mxResources.get('errorLoadingFile'), fn, true, null, null, true);
+					});
+
 					if (e.fallbackFileData != null)
 					{
 						e.alternateAction = {
@@ -3770,9 +4298,65 @@
 								this.fileLoaded(tempFile);
 							})
 						};
-					}
 
-					this.handleError(e, mxResources.get('errorLoadingFile'), fn, true, null, null, true);
+						showErr();
+					}
+					else
+					{
+						// Offers best-effort recovery candidates (cloud version /
+						// .bkp backup / in-memory repair) as a copy: 0 -> no button,
+						// 1 -> direct (lossy repair confirms), 2+ -> chooser dialog.
+						// Probing a version source may hit the network/disk, so show
+						// a spinner until the error dialog is ready. (Sync paths
+						// resolve before a repaint, so no spinner flashes.)
+						var recoverySpinner = this.spinner.spin(document.body, mxResources.get('loading'));
+
+						this.getRecoveryData(file, recoveryData, e, mxUtils.bind(this, function(candidates)
+						{
+							if (recoverySpinner)
+							{
+								this.spinner.stop();
+							}
+
+							if (candidates != null && candidates.length == 1)
+							{
+								var candidate = candidates[0];
+
+								e.alternateAction = {
+									label: candidate.label,
+									funct: mxUtils.bind(this, function()
+									{
+										this.hideDialog();
+
+										if (candidate.lossy)
+										{
+											this.confirm(mxResources.get('recoveryWarning'), mxUtils.bind(this, function()
+											{
+												this.openRecoveredCopy(candidate, recoveryTitle);
+											}));
+										}
+										else
+										{
+											this.openRecoveredCopy(candidate, recoveryTitle);
+										}
+									})
+								};
+							}
+							else if (candidates != null && candidates.length > 1)
+							{
+								e.alternateAction = {
+									label: mxResources.get('recover'),
+									funct: mxUtils.bind(this, function()
+									{
+										this.hideDialog();
+										this.showRecoveryDialog(candidates, recoveryTitle);
+									})
+								};
+							}
+
+							showErr();
+						}));
+					}
 				}
 				else
 				{
@@ -4042,14 +4626,15 @@
 	EditorUi.prototype.removeLibrarySidebar = function(id)
 	{
 		var elts = this.sidebar.palettes[id];
-		
+
 		if (elts != null)
 		{
 			for (var i = 0; i < elts.length; i++)
 			{
+				this.sidebar.unobserveElements(elts[i]);
 				elts[i].parentNode.removeChild(elts[i]);
 			}
-			
+
 			delete this.sidebar.palettes[id];
 		}
 	};
@@ -4260,7 +4845,12 @@
 				{
 					dropTarget = document.createElement('div');
 					dropTarget.className = 'geDropTarget';
-					mxUtils.write(dropTarget, mxResources.get('dragElementsHere'));
+					var label = mxResources.get('dragElementsHere');
+					mxUtils.write(dropTarget, label);
+					// Suppress the sidebar container's broader tooltip
+					// here — the drop-target has its own self-evident
+					// label that doubles as its tooltip.
+					dropTarget.setAttribute('title', label);
 				}
 				
 				content.appendChild(dropTarget);
@@ -4293,11 +4883,14 @@
 			}
 		}
 
+		// Eager init: the library content is wired up below (drop
+		// targets, edit dialog) and edited in place, so it must not
+		// go through the deferred virtualPalettes path
 		var contentDiv = this.sidebar.addPalette(file.getHash(), tmp,
 			(expand != null) ? expand : true, mxUtils.bind(this, function(content)
 		{
 			addImages(images, content);
-	    }));
+	    }), true);
 
 		if (library != null)
 		{
@@ -4680,34 +5273,19 @@
 										doImport(xml, 'text/xml');
 									}, null, img);
 								}
-								else if (new XMLHttpRequest().upload && this.isRemoteFileFormat(data, img) && file != null)
+								else if (this.isGliffyData(data, img) && file != null)
 								{
-									if (this.isExternalDataComms())
-									{
-										this.parseFile(file, mxUtils.bind(this, function(xhr)
-										{
-											if (xhr.readyState == 4)
-											{
-												this.spinner.stop();
-												
-												if (xhr.status >= 200 && xhr.status <= 299)
-												{
-													doImport(xhr.responseText, 'text/xml');
-												}
-												else
-												{
-													this.handleError({message: mxResources.get((xhr.status == 413) ?
-														'drawingTooLarge' : 'invalidOrMissingFile')},
-														mxResources.get('errorLoadingFile'));
-												}
-											}
-										}));
-									}
-									else
+									this.importGliffy(data, mxUtils.bind(this, function(xml)
 									{
 										this.spinner.stop();
-										this.showError(mxResources.get('error'), mxResources.get('notInOffline'));
-									}
+										doImport(xml, 'text/xml');
+									}), mxUtils.bind(this, function(err)
+									{
+										this.spinner.stop();
+										this.handleError({message: mxResources.get((err != null && err.status == 413) ?
+											'drawingTooLarge' : 'invalidOrMissingFile')},
+											mxResources.get('errorLoadingFile'));
+									}), img);
 								}
 								else
 								{
@@ -4919,7 +5497,7 @@
 	/**
 	 * Shows a tabbed configuration dialog with visual editor and JSON tabs.
 	 */
-	EditorUi.prototype.showConfigurationEditorDialog = function(title, key, customButtons, elt, helpLink, applyFn)
+	EditorUi.prototype.showConfigurationEditorDialog = function(title, key, customButtons, helpLink)
 	{
 		var editorUi = this;
 		var value = localStorage.getItem(key);
@@ -4992,23 +5570,11 @@
 			return tab;
 		}
 
-		var editorTabBtn = createTab(mxResources.get('editor', null, 'Editor'), true);
-		var jsonTabBtn = createTab('JSON', false);
+		var editorTabBtn = createTab(mxResources.get('editor'), true);
+		var jsonTabBtn = createTab(mxResources.get('formatJson'), false);
 
 		tabBar.appendChild(editorTabBtn);
 		tabBar.appendChild(jsonTabBtn);
-
-		if (elt != null)
-		{
-			var headerWrapper = document.createElement('div');
-			headerWrapper.style.marginLeft = 'auto';
-			headerWrapper.style.display = 'flex';
-			headerWrapper.style.alignItems = 'center';
-			headerWrapper.style.paddingRight = '4px';
-			headerWrapper.style.paddingBottom = '2px';
-			headerWrapper.appendChild(elt);
-			tabBar.appendChild(headerWrapper);
-		}
 
 		div.appendChild(tabBar);
 
@@ -5091,28 +5657,20 @@
 		div.appendChild(jsonContent);
 
 		// Tab switching
+		function styleTab(btn, active)
+		{
+			btn.style.borderBottomColor = active ? '#29b6f2' : 'transparent';
+			btn.style.fontWeight = active ? 'bold' : 'normal';
+			btn.style.color = active ? '' : '#888';
+		}
+
 		function setActiveTab(tab)
 		{
 			if (tab === activeTab) return;
 
-			if (tab === 'json')
-			{
-				if (latestEditorConfig != null)
-				{
-					textarea.value = JSON.stringify(latestEditorConfig, null, 2);
-				}
-
-				editorContent.style.display = 'none';
-				jsonContent.style.display = '';
-				jsonTabBtn.style.borderBottomColor = '#29b6f2';
-				jsonTabBtn.style.fontWeight = 'bold';
-				jsonTabBtn.style.color = '';
-				editorTabBtn.style.borderBottomColor = 'transparent';
-				editorTabBtn.style.fontWeight = 'normal';
-				editorTabBtn.style.color = '#888';
-				textarea.focus();
-			}
-			else
+			// Leaving the JSON tab adopts its (valid) content, entering it
+			// renders the current config
+			if (activeTab === 'json')
 			{
 				try
 				{
@@ -5121,15 +5679,20 @@
 					configEditor.setConfig(obj);
 				}
 				catch (e) {}
+			}
+			else if (tab === 'json' && latestEditorConfig != null)
+			{
+				textarea.value = JSON.stringify(latestEditorConfig, null, 2);
+			}
 
-				editorContent.style.display = '';
-				jsonContent.style.display = 'none';
-				editorTabBtn.style.borderBottomColor = '#29b6f2';
-				editorTabBtn.style.fontWeight = 'bold';
-				editorTabBtn.style.color = '';
-				jsonTabBtn.style.borderBottomColor = 'transparent';
-				jsonTabBtn.style.fontWeight = 'normal';
-				jsonTabBtn.style.color = '#888';
+			editorContent.style.display = (tab === 'editor') ? '' : 'none';
+			jsonContent.style.display = (tab === 'json') ? '' : 'none';
+			styleTab(editorTabBtn, tab === 'editor');
+			styleTab(jsonTabBtn, tab === 'json');
+
+			if (tab === 'json')
+			{
+				textarea.focus();
 			}
 
 			activeTab = tab;
@@ -5167,7 +5730,7 @@
 					var btn = mxUtils.button(label, function(e)
 					{
 						// Sync textarea from editor before calling button handler
-						if (activeTab === 'editor' && latestEditorConfig != null)
+						if (activeTab !== 'json' && latestEditorConfig != null)
 						{
 							textarea.value = JSON.stringify(latestEditorConfig, null, 2);
 						}
@@ -5196,10 +5759,28 @@
 
 		var applyBtn = mxUtils.button(mxResources.get('apply'), function()
 		{
+			// Nothing edited (eg. only offline languages toggled, which
+			// take effect immediately) - close without the restart notice
+			if (!modified)
+			{
+				closeDialog();
+				return;
+			}
+
 			var newValue;
 
-			if (activeTab === 'editor')
+			if (activeTab !== 'json')
 			{
+				var invalid = configEditor.getInvalidFields();
+
+				if (invalid.length > 0)
+				{
+					editorUi.handleError({message: mxResources.get('invalidInput') +
+						': ' + invalid.join(', ')});
+
+					return;
+				}
+
 				newValue = (latestEditorConfig != null && Object.keys(latestEditorConfig).length > 0) ?
 					JSON.stringify(latestEditorConfig, null, 2) : '';
 			}
@@ -5210,11 +5791,6 @@
 
 			try
 			{
-				if (applyFn != null)
-				{
-					applyFn(newValue);
-				}
-
 				if (newValue == value)
 				{
 					modified = false;
@@ -5284,22 +5860,268 @@
 	};
 
 	/**
+	 * Shows the offline languages dialog: bundles are cached on first use
+	 * by the service worker and can be installed and removed here. The
+	 * checkboxes act immediately; the UI language itself is chosen in the
+	 * language menu.
+	 */
+	EditorUi.prototype.showLanguageDialog = function()
+	{
+		var editorUi = this;
+
+		var div = document.createElement('div');
+		div.style.position = 'absolute';
+		div.style.top = '10px';
+		div.style.bottom = '10px';
+		div.style.left = '16px';
+		div.style.right = '16px';
+
+		var content = document.createElement('div');
+		content.style.position = 'absolute';
+		content.style.left = '0';
+		content.style.right = '0';
+		content.style.top = '0';
+		content.style.bottom = '46px';
+		content.style.overflow = 'auto';
+		div.appendChild(content);
+
+		// Updated in place by the window online/offline listeners while
+		// the dialog is open
+		var languageRows = [];
+
+		// The explicitly selected language as in the language menu -
+		// mxClient.language falls back to the browser locale, which is
+		// not what the UI loaded. With "Automatic" nothing is pinned:
+		// the resolved bundle is re-cached on the next start.
+		function getSelectedLanguage()
+		{
+			var current = mxLanguage;
+
+			if (urlParams['lang'] == null && isLocalStorage)
+			{
+				current = mxSettings.settings.language;
+			}
+
+			return current;
+		}
+
+		function updateLanguageStates()
+		{
+			var current = getSelectedLanguage();
+			var offline = navigator.onLine === false;
+
+			var installed = Object.create(null);
+
+			for (var i = 0; i < languageRows.length; i++)
+			{
+				var entry = languageRows[i];
+				installed[entry.code] = entry.box.checked;
+
+				// English ships precached, the bundle in use would be
+				// re-downloaded on the next start, and installing needs
+				// the network
+				entry.box.disabled = entry.code == 'en' ||
+					(entry.code == current && entry.box.checked) ||
+					(offline && !entry.box.checked);
+				entry.box.style.cursor = entry.box.disabled ? '' : 'pointer';
+				entry.row.style.cursor = entry.box.disabled ? 'default' : 'pointer';
+
+				if (offline && !entry.box.checked)
+				{
+					entry.row.setAttribute('title', mxResources.get('notInOffline'));
+				}
+				else
+				{
+					entry.row.removeAttribute('title');
+				}
+			}
+		}
+
+		editorUi.getOfflineLanguages(function(codes)
+		{
+			var installed = Object.create(null);
+
+			for (var i = 0; i < codes.length; i++)
+			{
+				installed[codes[i]] = true;
+			}
+
+			// All selectable languages sorted by native name
+			var entries = [];
+
+			for (var code in mxLanguageMap)
+			{
+				if (code != 'i18n' && mxLanguageMap[code] != '')
+				{
+					entries.push({code: code, name: mxLanguageMap[code]});
+				}
+			}
+
+			entries.sort(function(a, b)
+			{
+				return a.name.localeCompare(b.name);
+			});
+
+			var help = document.createElement('div');
+			help.style.padding = '8px 4px 0 4px';
+			help.style.color = '#888';
+			mxUtils.write(help, mxResources.get('offlineLanguages',
+				null, 'Languages available offline'));
+			content.appendChild(help);
+
+			var grid = document.createElement('div');
+			grid.style.display = 'grid';
+			grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(170px, 1fr))';
+			grid.style.gap = '2px 16px';
+			grid.style.padding = '8px 4px';
+
+			// The gaps and padding belong to the grid, not the rows - a
+			// uniform pointer keeps the cursor steady across them; the
+			// rows are labels that toggle their install checkbox (rows
+			// that cannot act override it with 'default')
+			grid.style.cursor = 'pointer';
+
+			for (var i = 0; i < entries.length; i++)
+			{
+				(function(code, name)
+				{
+					var row = document.createElement('label');
+					row.style.display = 'flex';
+					row.style.alignItems = 'center';
+					row.style.padding = '4px';
+					row.style.overflow = 'hidden';
+					row.style.whiteSpace = 'nowrap';
+
+					// Fixed-size slot so the checkbox can make way for
+					// the spinner while a bundle is loading
+					var cell = document.createElement('span');
+					cell.style.display = 'inline-flex';
+					cell.style.alignItems = 'center';
+					cell.style.justifyContent = 'center';
+					cell.style.position = 'relative';
+					cell.style.width = '16px';
+					cell.style.height = '16px';
+					cell.style.margin = '0 8px 0 0';
+					cell.style.flexShrink = '0';
+
+					var box = document.createElement('input');
+					box.setAttribute('type', 'checkbox');
+					box.style.margin = '0';
+					box.checked = code == 'en' || installed[code] == true;
+					languageRows.push({code: code, box: box, row: row});
+
+					// The UA checkbox cursor does not inherit the row's
+					// pointer - kept in sync with the disabled state in
+					// updateLanguageStates
+
+					mxEvent.addListener(box, 'change', function()
+					{
+						box.style.display = 'none';
+						var spinner = editorUi.createSpinner(null, null, 4);
+						spinner.spin(cell);
+
+						// Reflects the actual cache state afterwards - a
+						// failed install (eg. connection lost) reverts
+						var done = function()
+						{
+							editorUi.getOfflineLanguages(function(codes)
+							{
+								spinner.stop();
+								box.style.display = '';
+								box.checked = mxUtils.indexOf(codes, code) >= 0;
+								updateLanguageStates();
+							});
+
+							editorUi.updateOfflineLanguages();
+						};
+
+						if (box.checked)
+						{
+							// Fetching through the service worker caches
+							// the bundle as a side effect (lazy route)
+							fetch('resources/dia_' + code + '.txt')
+								.then(done, done);
+						}
+						else
+						{
+							editorUi.removeOfflineLanguage(code, done);
+						}
+					});
+
+					cell.appendChild(box);
+					row.appendChild(cell);
+
+					var label = document.createElement('span');
+					label.style.overflow = 'hidden';
+					label.style.textOverflow = 'ellipsis';
+
+					// The dialog inherits a line-height equal to the font
+					// size - overflow:hidden would clip descenders
+					label.style.lineHeight = 'normal';
+					mxUtils.write(label, name);
+					row.appendChild(label);
+					grid.appendChild(row);
+				})(entries[i].code, entries[i].name);
+			}
+
+			content.appendChild(grid);
+			updateLanguageStates();
+		});
+
+		// Keeps the checkbox and dropdown states in sync with
+		// connectivity changes; removed when the dialog closes
+		var connectivityListener = function()
+		{
+			updateLanguageStates();
+		};
+
+		mxEvent.addListener(window, 'online', connectivityListener);
+		mxEvent.addListener(window, 'offline', connectivityListener);
+
+		// Buttons
+		var buttons = document.createElement('div');
+		buttons.style.position = 'absolute';
+		buttons.style.left = '0';
+		buttons.style.right = '0';
+		buttons.style.bottom = '0';
+		buttons.style.height = '46px';
+		buttons.style.display = 'flex';
+		buttons.style.whiteSpace = 'nowrap';
+		buttons.style.alignItems = 'center';
+		buttons.style.justifyContent = 'end';
+		buttons.style.paddingTop = '10px';
+		buttons.style.paddingBottom = '10px';
+		buttons.style.boxSizing = 'border-box';
+
+		var closeBtn = mxUtils.button(mxResources.get('close'), function()
+		{
+			editorUi.hideDialog();
+		});
+
+		closeBtn.setAttribute('title', 'Escape');
+		closeBtn.className = 'geBtn gePrimaryBtn';
+		buttons.appendChild(closeBtn);
+		div.appendChild(buttons);
+
+		this.showDialog(div, 480, 460, true, true, function()
+		{
+			mxEvent.removeListener(window, 'online', connectivityListener);
+			mxEvent.removeListener(window, 'offline', connectivityListener);
+		});
+	};
+
+	/**
 	 * Hides the current menu.
 	 */
 	EditorUi.prototype.showBackgroundImageDialog = function(apply, img, color, showColor)
 	{
-		apply = (apply != null) ? apply : mxUtils.bind(this, function(image, failed, color, shadowVisible)
+		apply = (apply != null) ? apply : mxUtils.bind(this, function(image, failed, color)
 		{
 			if (!failed)
 			{
 				var change = new ChangePageSetup(this, (showColor) ? color : null, image);
 				change.ignoreColor = !showColor;
 
-				if (shadowVisible != null && showColor)
-				{
-					change.shadowVisible = shadowVisible;
-				}
-				
 				this.editor.graph.model.execute(change);
 			}
 		});
@@ -5615,8 +6437,10 @@
 				fn3 = e.alternateAction.funct;
 			}
 	
+			// Optional per-error width override (eg. file-load errors widen the
+			// dialog slightly to avoid an awkward wrap of the long parser message)
 			this.showError(title, msg, btn, fn, retry, null, null, btn3, fn3,
-				null, null, null, (invokeFnOnClose) ? fn : null);
+				(e != null) ? e.dialogWidth : null, null, null, (invokeFnOnClose) ? fn : null);
 		}
 		else if (fn != null)
 		{
@@ -5896,8 +6720,7 @@
 		div.style.whiteSpace = 'nowrap';
 
 		var hd = document.createElement('h3');
-		mxUtils.write(hd, mxResources.get('formatAnimatedGif', null, 'Animated GIF'));
-		hd.style.cssText = 'width:100%;text-align:center;margin-top:0px;margin-bottom:10px';
+		mxUtils.write(hd, mxResources.get('formatAnimatedGif'));
 		div.appendChild(hd);
 
 		// --- Settings section ---
@@ -5909,14 +6732,14 @@
 		formRow.className = 'geDialogFormRow';
 		var lbl = document.createElement('span');
 		lbl.className = 'geDialogFormLabel';
-		mxUtils.write(lbl, mxResources.get('speed', null, 'Speed') + ':');
+		mxUtils.write(lbl, mxResources.get('speed') + ':');
 		formRow.appendChild(lbl);
 		var fpsSelect = document.createElement('select');
 
 		var fpsOptions = [
-			{label: mxResources.get('slow', null, 'Slow'), value: 8},
-			{label: mxResources.get('medium', null, 'Medium'), value: 15},
-			{label: mxResources.get('fast', null, 'Fast'), value: 24}
+			{label: mxResources.get('slow'), value: 8},
+			{label: mxResources.get('medium'), value: 15},
+			{label: mxResources.get('fast'), value: 24}
 		];
 
 		for (var i = 0; i < fpsOptions.length; i++)
@@ -5924,13 +6747,14 @@
 			var opt = document.createElement('option');
 			mxUtils.write(opt, fpsOptions[i].label);
 			opt.setAttribute('value', fpsOptions[i].value);
-
-			if (fpsOptions[i].value == 15)
-			{
-				opt.setAttribute('selected', 'selected');
-			}
-
 			fpsSelect.appendChild(opt);
+		}
+
+		fpsSelect.value = (this.lastExportFps != null) ? this.lastExportFps : 15;
+
+		if (fpsSelect.selectedIndex < 0)
+		{
+			fpsSelect.value = 15;
 		}
 
 		formRow.appendChild(fpsSelect);
@@ -5945,7 +6769,7 @@
 		formRow.appendChild(lbl);
 		var zoomInput = document.createElement('input');
 		zoomInput.setAttribute('type', 'text');
-		zoomInput.value = '100%';
+		zoomInput.value = this.lastExportZoom || '100%';
 		formRow.appendChild(zoomInput);
 		section.appendChild(formRow);
 
@@ -5954,11 +6778,11 @@
 		formRow.className = 'geDialogFormRow';
 		lbl = document.createElement('span');
 		lbl.className = 'geDialogFormLabel';
-		mxUtils.write(lbl, mxResources.get('borderWidth', null, 'Border Width') + ':');
+		mxUtils.write(lbl, mxResources.get('borderWidth') + ':');
 		formRow.appendChild(lbl);
 		var borderInput = document.createElement('input');
 		borderInput.setAttribute('type', 'text');
-		borderInput.value = '0';
+		borderInput.value = this.lastExportBorder || '0';
 		formRow.appendChild(borderInput);
 		section.appendChild(formRow);
 
@@ -5967,12 +6791,12 @@
 		formRow.className = 'geDialogFormRow';
 		lbl = document.createElement('span');
 		lbl.className = 'geDialogFormLabel';
-		mxUtils.write(lbl, mxResources.get('loops', null, 'Loops') + ':');
+		mxUtils.write(lbl, mxResources.get('loops') + ':');
 		formRow.appendChild(lbl);
 		var loopSelect = document.createElement('select');
 
 		var loopOptions = [
-			{label: mxResources.get('forever', null, 'Forever'), value: 0},
+			{label: mxResources.get('forever'), value: 0},
 			{label: '1', value: 1},
 			{label: '3', value: 3},
 			{label: '5', value: 5}
@@ -5983,16 +6807,50 @@
 			var opt = document.createElement('option');
 			mxUtils.write(opt, loopOptions[i].label);
 			opt.setAttribute('value', loopOptions[i].value);
-
-			if (loopOptions[i].value == 0)
-			{
-				opt.setAttribute('selected', 'selected');
-			}
-
 			loopSelect.appendChild(opt);
 		}
 
+		loopSelect.value = (this.lastExportLoops != null) ? this.lastExportLoops : 0;
+
+		if (loopSelect.selectedIndex < 0)
+		{
+			loopSelect.value = 0;
+		}
+
 		formRow.appendChild(loopSelect);
+		section.appendChild(formRow);
+
+		// Appearance selects the color scheme that light-dark() colors
+		// resolve to when the frames are rasterized [jgraph/drawio#5619]
+		formRow = document.createElement('div');
+		formRow.className = 'geDialogFormRow';
+		lbl = document.createElement('span');
+		lbl.className = 'geDialogFormLabel';
+		mxUtils.write(lbl, mxResources.get('appearance') + ':');
+		formRow.appendChild(lbl);
+		var themeSelect = document.createElement('select');
+
+		var lightOption = document.createElement('option');
+		lightOption.setAttribute('value', 'light');
+		mxUtils.write(lightOption, mxResources.get('light'));
+		themeSelect.appendChild(lightOption);
+
+		var darkOption = document.createElement('option');
+		darkOption.setAttribute('value', 'dark');
+		mxUtils.write(darkOption, mxResources.get('dark'));
+		themeSelect.appendChild(darkOption);
+
+		var defaultTheme = (Editor.isDarkMode()) ? 'dark' : 'light';
+		themeSelect.value = (this.lastExportTheme != null) ?
+			this.lastExportTheme : defaultTheme;
+
+		// Stored override may be an option that doesn't exist here (eg. auto)
+		if (themeSelect.selectedIndex < 0)
+		{
+			themeSelect.value = defaultTheme;
+		}
+
+		formRow.appendChild(themeSelect);
 		section.appendChild(formRow);
 
 		div.appendChild(section);
@@ -6002,7 +6860,8 @@
 		optSection.className = 'geDialogSection';
 
 		var transparent = this.addCheckbox(optSection, mxResources.get('transparentBackground',
-			null, 'Transparent Background'), false);
+			null, 'Transparent Background'), (this.lastExportTransparent != null) ?
+			this.lastExportTransparent : false, null, null, null, null, null, true);
 
 		div.appendChild(optSection);
 
@@ -6015,16 +6874,29 @@
 				zoomVal = 100;
 			}
 
+			// Keeps manually changed settings for the session
+			this.lastExportZoom = zoomVal + '%';
+			this.lastExportBorder = borderInput.value;
+			this.lastExportFps = (parseInt(fpsSelect.value) != 15) ?
+				parseInt(fpsSelect.value) : null;
+			this.lastExportLoops = (parseInt(loopSelect.value) != 0) ?
+				parseInt(loopSelect.value) : null;
+			this.lastExportTransparent = (transparent.checked) ? true : null;
+			this.lastExportTheme = (themeSelect.value == defaultTheme) ?
+				null : themeSelect.value;
+
 			this.exportAnimatedGif({
 				fps: parseInt(fpsSelect.value),
 				scale: zoomVal / 100,
 				border: parseInt(borderInput.value) || 0,
 				repeat: parseInt(loopSelect.value),
 				transparent: transparent.checked,
+				theme: themeSelect.value,
 				background: transparent.checked ? null :
 					((this.editor.graph.background != null &&
 					  this.editor.graph.background != mxConstants.NONE) ?
-						this.editor.graph.background : '#ffffff')
+						this.editor.graph.background :
+						Editor.getDefaultPageBackgroundColor())
 			});
 		}), null, mxResources.get('export'),
 			'https://www.drawio.com/doc/faq/export-diagram');
@@ -6049,26 +6921,24 @@
 
 					if (blob != null)
 					{
-						var filename = this.getBaseFilename() + '.gif';
+						// Routes the result through the standard save dialog
+						// (device/browser/cloud) like the other image exports
+						var reader = new FileReader();
 
-						if (typeof navigator.msSaveBlob === 'function')
+						reader.onload = mxUtils.bind(this, function()
 						{
-							navigator.msSaveBlob(blob, filename);
-						}
-						else
-						{
-							var a = document.createElement('a');
-							a.href = URL.createObjectURL(blob);
-							a.download = filename;
-							document.body.appendChild(a);
-							a.click();
+							var uri = reader.result;
+							this.saveData(this.getBaseFilename() + '.gif', 'gif',
+								uri.substring(uri.lastIndexOf(',') + 1),
+								'image/gif', true);
+						});
 
-							setTimeout(function()
-							{
-								document.body.removeChild(a);
-								URL.revokeObjectURL(a.href);
-							}, 0);
-						}
+						reader.onerror = mxUtils.bind(this, function(e)
+						{
+							this.handleError(e);
+						});
+
+						reader.readAsDataURL(blob);
 					}
 				}), mxUtils.bind(this, function(e)
 				{
@@ -6243,25 +7113,25 @@
 					{
 						this.openInNewWindow(data, mimeType, base64Encoded);
 					}
-					else if (mimeType != null && mimeType.substring(0, 9) == 'text/html')
+					else if (mimeType != null && mimeType.substring(0, 9) == 'text/html' &&
+						data.length < EmbedDialog.maxSize)
 					{
-						var dlg = new EmbedDialog(this, data);
+						var dlg = new EmbedDialog(this, data, null, null,
+							null, null, null, null, null, true);
 						this.showDialog(dlg.container, 450, 270, true, true, null,
 							false, null, new mxRectangle(0, 0, 400, 250));
 						dlg.init();
 					}
 					else
 					{
-						var win = window.open('about:blank');
-						
+						// Native rendering of text is faster than writing
+						// a pre element and keeps the charset intact
+						var win = window.open(URL.createObjectURL(new Blob([data],
+							{type: 'text/plain;charset=utf-8'})));
+
 						if (win == null)
 						{
 							mxUtils.popup(data, true);
-						}
-						else
-						{
-							win.document.write('<pre>' + mxUtils.htmlEntities(data, false) + '</pre>');
-							win.document.close();
 						}
 					}
 				}
@@ -6317,7 +7187,7 @@
 			this.hideDialog(null, null, dlg.container);
 		}), disabled, data, mimeType, base64Encoded, defaultMode);
 
-		this.showDialog(dlg.container, 420, 110, true, false, mxUtils.bind(this, function()
+		this.showDialog(dlg.container, 420, (mimeType != null) ? 114 : 122, true, false, mxUtils.bind(this, function()
 		{
 			this.hideDialog();
 		}));
@@ -6330,52 +7200,13 @@
 	 */
 	EditorUi.prototype.openInNewWindow = function(data, mimeType, base64Encoded)
 	{
-		var win = window.open('about:blank');
-		
-		if (win == null || win.document == null)
+		var win = window.open(URL.createObjectURL((base64Encoded) ?
+			this.base64ToBlob(data, mimeType) :
+			new Blob([data], {type: mimeType})));
+
+		if (win == null)
 		{
 			mxUtils.popup(data, true);
-		}
-		else
-		{
-			var bg = 'background: light-dark(rgb(255, 255, 255), rgb(18, 18, 18))';
-
-			// Extracs background color from SVG style
-			if (mimeType == 'image/svg+xml')
-			{
-				var doc = mxUtils.parseXml(data);
-				var temp = doc.documentElement.style.backgroundColor;
-
-				if (temp != '')
-				{
-					bg = 'background: ' + temp + ';';
-				}
-			}
-			
-			var prefix = '<html><head><meta charset="UTF-8"></head><body ' +
-				'style="color-scheme: light dark; ' + bg + '">';
-
-			if (mimeType == 'image/svg+xml' && !mxClient.IS_SVG)
-			{
-				win.document.write(prefix + '<pre>' + mxUtils.htmlEntities(data, false) + '</pre></body></html>');
-				win.document.close();
-			}
-			else
-			{
-				if (mimeType == 'image/svg+xml' && !base64Encoded)
-				{
-					win.document.write(prefix + data + '</body></html>');
-				}
-				else
-				{
-					var temp = (base64Encoded) ? data : btoa(unescape(encodeURIComponent(data)));
-				
-					win.document.write(prefix + '<img style="max-width:100%;" src="data:' +
-						mimeType  + ';base64,' + temp + '"/></body></html>');
-				}
-				
-				win.document.close();
-			}
 		}
 	};
 	
@@ -6665,6 +7496,30 @@
 						mxEvent.addListener(img, 'click', mxUtils.bind(this, function()
 						{
 							this.openInNewWindow(data.substring(data.indexOf(',') + 1), 'image/png', true);
+
+							// Some platforms like Forge don't allow opening a new window, so we also copy the image to the clipboard
+							if (navigator.clipboard != null && typeof ClipboardItem === 'function')
+							{
+								this.writeImageToClipboard(data, canvas.width, canvas.height, 'image/png',
+									mxUtils.bind(this, function()
+									{
+										var msg = mxResources.get('imageClicked');
+
+										// Auto-closing banner notification if available, otherwise modal alert
+										if (this.showBanner != null)
+										{
+											this.showBanner('ImageClicked', msg, null, false, true);
+										}
+										else
+										{
+											this.alert(msg);
+										}
+									}), mxUtils.bind(this, function(e)
+									{
+										this.handleError(e);
+									}));
+							}
+
 							clickHandler.apply(this, arguments);
 						}));
 				   	}), null, this.thumbImageCache, null, mxUtils.bind(this, function(e)
@@ -6823,7 +7678,7 @@
 			this.hideDialog(null, null, dlg.container);
 		}), disabled, null, 'application/pdf');
 
-		this.showDialog(dlg.container, 420, 110, true, false, mxUtils.bind(this, function()
+		this.showDialog(dlg.container, 420, 114, true, false, mxUtils.bind(this, function()
 		{
 			this.hideDialog();
 		}));
@@ -6883,9 +7738,157 @@
 	/**
 	 *
 	 */
+	/**
+	 * Adds the style and script for the hover and click popups of the tooltip
+	 * and note icons added by createSvgImageExport to the given exported SVG.
+	 * The popup content in the data-icon-content attributes was sanitized at
+	 * export time and the script contains no dynamic parts. The script only
+	 * runs where the SVG is the document, eg. opened in a browser tab or via
+	 * an object tag, not when the SVG is shown with an img tag.
+	 *
+	 * That guarantee only covers the attributes createSvgImageExport writes on
+	 * its own icon wrappers. Labels are copied into the export as markup, so any
+	 * other element carrying the attribute came from the diagram and its value
+	 * was never sanitized for this use. Those are dropped here before the script
+	 * is added, so only the wrappers this export created are ever bound.
+	 */
+	EditorUi.prototype.addSvgIconHandlers = function(svgRoot)
+	{
+		var candidates = svgRoot.querySelectorAll('[data-icon-content]');
+
+		for (var i = 0; i < candidates.length; i++)
+		{
+			// The wrappers are SVG g elements that also carry the icon type
+			if (candidates[i].nodeName != 'g' ||
+				!candidates[i].hasAttribute('data-icon'))
+			{
+				candidates[i].removeAttribute('data-icon-content');
+			}
+		}
+
+		if (svgRoot.querySelector('[data-icon-content]') == null)
+		{
+			return;
+		}
+
+		var svgDoc = svgRoot.ownerDocument;
+		var style = (svgDoc.createElementNS != null) ?
+			svgDoc.createElementNS(mxConstants.NS_SVG, 'style') :
+			svgDoc.createElement('style');
+		style.appendChild(svgDoc.createTextNode(
+			'.geSvgPopup { display: inline-block; box-sizing: border-box; max-width: 100%; max-height: 100%; ' +
+			'overflow: auto; background-color: #ffffff; border: 1px solid #c0c0c0; border-radius: 4px; ' +
+			'box-shadow: 0 2px 6px 0 rgba(0, 0, 0, 0.25); padding: 8px; color: #000000; ' +
+			'font-family: Helvetica, Arial, sans-serif; font-size: 12px; word-break: break-word; } ' +
+			'@media (prefers-color-scheme: dark) { .geSvgPopup { ' +
+			'background-color: #2a252f; border-color: #505050; color: #ffffff; } } ' +
+			// Hides the icons and any open popup in print output as they are
+			// interactive helpers rather than part of the diagram
+			'@media print { [data-icon], .geSvgPopup { display: none; } }'));
+		svgRoot.appendChild(style);
+
+		var script = (svgDoc.createElementNS != null) ?
+			svgDoc.createElementNS(mxConstants.NS_SVG, 'script') :
+			svgDoc.createElement('script');
+		script.setAttribute('type', 'text/javascript');
+
+		var code = '(function() {\n' +
+			'var svg = document.documentElement;\n' +
+			'var fo = null, active = null, pinned = false, thread = null;\n' +
+			'function hide() {\n' +
+			'if (fo != null && fo.parentNode != null) { fo.parentNode.removeChild(fo); }\n' +
+			'fo = null; active = null; pinned = false;\n' +
+			'}\n' +
+			'function cancel() {\n' +
+			'if (thread != null) { window.clearTimeout(thread); thread = null; }\n' +
+			'}\n' +
+			'function schedule() {\n' +
+			'cancel();\n' +
+			'if (!pinned) { thread = window.setTimeout(hide, 300); }\n' +
+			'}\n' +
+			'function show(icon) {\n' +
+			'cancel();\n' +
+			'if (active == icon) { return; }\n' +
+			'hide();\n' +
+			'var content = icon.getAttribute("data-icon-content");\n' +
+			'if (content == null || content == "") { return; }\n' +
+			'var x = parseFloat(icon.getAttribute("x"));\n' +
+			'var y = parseFloat(icon.getAttribute("y"));\n' +
+			'var w = parseFloat(icon.getAttribute("width"));\n' +
+			'if (isNaN(x) || isNaN(y)) {\n' +
+			'try { var bb = icon.getBBox(); x = bb.x; y = bb.y; w = bb.width; }\n' +
+			'catch (e) { x = 0; y = 0; }\n' +
+			'}\n' +
+			'if (isNaN(w) || w <= 0) { w = 16; }\n' +
+			'var vb = (svg.viewBox != null && svg.viewBox.baseVal != null &&\n' +
+			'svg.viewBox.baseVal.width > 0) ? svg.viewBox.baseVal : null;\n' +
+			'var maxW = (vb != null) ? vb.width : (svg.clientWidth || 800);\n' +
+			'var maxH = (vb != null) ? vb.height : (svg.clientHeight || 600);\n' +
+			'var pw = Math.max(60, Math.min(320, maxW - 4));\n' +
+			'var ph = Math.max(40, Math.min(220, maxH - 4));\n' +
+			'fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");\n' +
+			'fo.setAttribute("width", pw);\n' +
+			'fo.setAttribute("height", ph);\n' +
+			'var div = document.createElementNS("http://www.w3.org/1999/xhtml", "div");\n' +
+			'div.setAttribute("class", "geSvgPopup");\n' +
+			'div.innerHTML = content;\n' +
+			'div.addEventListener("mouseenter", cancel);\n' +
+			'div.addEventListener("mouseleave", schedule);\n' +
+			'fo.appendChild(div);\n' +
+			'svg.appendChild(fo);\n' +
+			'var mw = div.offsetWidth;\n' +
+			'var mh = div.offsetHeight;\n' +
+			'if (mw > 0) { pw = Math.min(pw, mw + 2); }\n' +
+			'if (mh > 0) { ph = Math.min(ph, mh + 2); }\n' +
+			'var px = x + w + 4;\n' +
+			'var py = y;\n' +
+			'if (vb != null) {\n' +
+			'px = Math.max(vb.x, Math.min(px, vb.x + vb.width - pw - 2));\n' +
+			'py = Math.max(vb.y, Math.min(py, vb.y + vb.height - ph - 2));\n' +
+			'}\n' +
+			'fo.setAttribute("x", px);\n' +
+			'fo.setAttribute("y", py);\n' +
+			'fo.setAttribute("width", pw);\n' +
+			'fo.setAttribute("height", ph);\n' +
+			'active = icon;\n' +
+			'}\n' +
+			'var icons = document.querySelectorAll("g[data-icon][data-icon-content]");\n' +
+			'for (var i = 0; i < icons.length; i++) {\n' +
+			'(function(icon) {\n' +
+			'icon.addEventListener("click", function(evt) {\n' +
+			'if (active == icon) { hide(); }\n' +
+			'else { show(icon); pinned = true; }\n' +
+			'evt.preventDefault();\n' +
+			'evt.stopPropagation();\n' +
+			'});\n' +
+			'icon.addEventListener("mouseenter", function() {\n' +
+			'if (pinned) { cancel(); }\n' +
+			'else { show(icon); }\n' +
+			'});\n' +
+			'icon.addEventListener("mouseleave", schedule);\n' +
+			'})(icons[i]);\n' +
+			'}\n' +
+			'document.addEventListener("mousedown", function(evt) {\n' +
+			'if (fo != null && (active == null || !active.contains(evt.target)) &&\n' +
+			'!fo.contains(evt.target)) { hide(); }\n' +
+			'});\n' +
+			'document.addEventListener("keydown", function(evt) {\n' +
+			'if (evt.keyCode == 27) { hide(); }\n' +
+			'});\n' +
+			'})();';
+
+		// Single line as mxUtils.getXml replaces linefeeds with entities,
+		// which are not decoded inside the CDATA section below
+		code = code.replace(/\n/g, ' ');
+
+		// CDATA keeps the code intact for both XML and HTML parsers
+		script.appendChild(svgDoc.createCDATASection(code));
+		svgRoot.appendChild(script);
+	};
+
 	EditorUi.prototype.exportSvg = function(scale, transparentBackground, ignoreSelection, addShadow,
 		editable, embedImages, border, noCrop, currentPage, linkTarget, theme, exportType,
-		embedFonts, saveFn)
+		embedFonts, saveFn, addSvgData, grid, icons)
 	{
 		if (this.spinner.spin(document.body, mxResources.get('exporting'), mxUtils.bind(this, function(err)
 			{
@@ -6893,7 +7896,7 @@
 				{
 					this.exportSvg(scale, transparentBackground, ignoreSelection, addShadow,
 						editable, embedImages, border, noCrop, currentPage, linkTarget,
-						theme, exportType, embedFonts, saveFn);
+						theme, exportType, embedFonts, saveFn, addSvgData, grid, icons);
 				}));
 				
 				this.handleError(err);
@@ -6933,34 +7936,26 @@
 					mxUtils.preferDarkColor = theme == 'dark';
 				}
 
-				// Uses temporary font lookup for export
-				var prevAddFont = Graph.addFont;
-				var tempFontLookup = {};
-
-				Graph.addFont = function(name, url, callback, elementLookup)
+				// Extends the border so that the icons outside of the cell
+				// bounds, up to 16 pixels at scale 1, are not clipped
+				if (icons)
 				{
-					prevAddFont.call(this, name, url, callback, tempFontLookup);
-				};
+					border = Math.max((border != null) ? border : 0, Math.ceil(16 * scale));
+				}
 
-				var imgExport = this.editor.graph.createSvgImageExport(editable);
+				var imgExport = this.editor.graph.createSvgImageExport(editable, addSvgData,
+					icons, (linkTarget == 'self') ? '_top' : '_blank');
+				var tempFontLookup = Object.create(null);
 
-				// Adds font to temporary font lookup
-				var prevDrawCellState = imgExport.drawCellState;
-
-				imgExport.drawCellState = function(state, canvas)
+				// Restricts font embedding to fonts used in rendered cells
+				var svgRoot = this.getSvgWithFontLookup(tempFontLookup, imgExport,
+					mxUtils.bind(this, function()
 				{
-					if (state != null)
-					{
-						Graph.processFontStyle(state.style);
-					}
-
-					prevDrawCellState.apply(this, arguments);
-				};
-
-				var svgRoot = this.editor.graph.getSvg(bg, scale, border, noCrop, null,
-					ignoreSelection, null, imgExport, (linkTarget == 'blank') ? '_blank' :
-					((linkTarget == 'self') ? '_top' : null), null, !embedFonts,
-					theme, exportType);
+					return this.editor.graph.getSvg(bg, scale, border, noCrop, null,
+						ignoreSelection, null, imgExport, (linkTarget == 'blank') ? '_blank' :
+						((linkTarget == 'self') ? '_top' : null), null, null,
+						theme, exportType, null, null, null, grid);
+				}));
 				
 				mxUtils.lightDarkColorSupported = prevLightDarkColorSupported;
 				mxUtils.preferDarkColor = prevPreferDarkColor;
@@ -6970,7 +7965,12 @@
 				{
 					this.editor.graph.addSvgShadow(svgRoot);
 				}
-				
+
+				if (icons)
+				{
+					this.addSvgIconHandlers(svgRoot);
+				}
+
 				var filename = this.getBaseFilename() + ((editable) ? '.drawio' : '') + '.svg';
 
 				saveFn = (saveFn != null) ? saveFn : mxUtils.bind(this, function(svg)
@@ -7032,16 +8032,8 @@
 					}
 				});
 
-				// Uses temporary font lookup for export
-				var prevCustomFontElements = Graph.customFontElements;
-				Graph.customFontElements = tempFontLookup;
-				
 				var done = mxUtils.bind(this, function(svgRoot)
 				{
-					// Restores global state
-					Graph.customFontElements = prevCustomFontElements
-					Graph.addFont = prevAddFont;
-
 					if (embedImages && !this.isOffline() && Editor.canvasSupported)
 					{
 						// Caches images
@@ -7058,15 +8050,10 @@
 					}
 				});
 
-				if (embedFonts)
-				{
-					this.embedFonts(svgRoot, done);
-				}
-				else
-				{
-					this.editor.addFontCss(svgRoot);
-					done(svgRoot);
-				}
+				// Adds fonts of rendered cells as CSS or external
+				// references [jgraph/drawio#5000]
+				this.embedFonts(svgRoot, done, (embedFonts) ? true : false,
+					tempFontLookup);
 			}
 			catch (e)
 			{
@@ -7377,19 +8364,103 @@
 
 		return cb;
 	};
-	
+
 	/**
-	 * 
+	 * Appends an "Advanced" collapsible section to the given container. Returns the
+	 * inner content element to which callers append rows. The dialog grows naturally
+	 * when expanded because showDialog is called with null height.
+	 */
+	EditorUi.prototype.addAdvancedSection = function(parent, labelKey)
+	{
+		var title = document.createElement('div');
+		title.className = 'geCollapsibleTitle';
+		mxUtils.write(title, mxResources.get(labelKey || 'advanced'));
+
+		var contentWrapper = document.createElement('div');
+		contentWrapper.className = 'geCollapsibleContent geCollapsed';
+
+		var content = document.createElement('div');
+		content.className = 'geDialogSection';
+		contentWrapper.appendChild(content);
+
+		var setExpanded = function(value)
+		{
+			if (value === title.classList.contains('geExpanded'))
+			{
+				return;
+			}
+
+			title.classList.toggle('geExpanded');
+			contentWrapper.classList.toggle('geCollapsed');
+
+			// Dialog height is measured once at construction from scrollHeight,
+			// so re-compute it against the outer wrapper whenever we expand or
+			// collapse — otherwise the new rows are clipped by overflow:hidden.
+			// Clear the explicit height first so the wrapper can flow to its
+			// natural size; the flex layout inside CustomDialog otherwise
+			// reports the constrained (shrunk) height back. CSS max-height:100%
+			// still caps the visible dialog to the viewport.
+			var dlg = title.closest('.geDialog');
+
+			if (dlg != null)
+			{
+				var wrapper = dlg.firstElementChild;
+
+				if (wrapper != null)
+				{
+					dlg.style.height = '';
+					dlg.style.height = (wrapper.scrollHeight + 48) + 'px';
+				}
+			}
+		};
+
+		mxEvent.addListener(title, 'click', function()
+		{
+			setExpanded(!title.classList.contains('geExpanded'));
+		});
+
+		parent.appendChild(title);
+		parent.appendChild(contentWrapper);
+
+		return {
+			content: content,
+			// The collapsible container around content — append further
+			// geDialogSection siblings here to keep separate section cards
+			// inside the collapsed area (see PageSetupDialog)
+			wrapper: contentWrapper,
+			expand: function()
+			{
+				setExpanded(true);
+			},
+			collapse: function()
+			{
+				setExpanded(false);
+			},
+			isExpanded: function()
+			{
+				return title.classList.contains('geExpanded');
+			}
+		};
+	};
+
+	/**
+	 *
 	 */
 	EditorUi.prototype.addEditButton = function(div, lightbox)
 	{
 		var editRow = document.createElement('div');
 		editRow.className = 'geDialogCheckRow';
-		editRow.style.paddingLeft = '24px';
 
-		var edit = this.addCheckbox(editRow, mxResources.get('edit') + ':', true, null, true);
+		// Checkbox and label form the fixed label column so the select
+		// is left aligned with the form row selects in the same section
+		var editLbl = document.createElement('span');
+		editLbl.className = 'geDialogFormLabel';
+		editLbl.style.display = 'flex';
+		editLbl.style.alignItems = 'center';
+
+		var edit = this.addCheckbox(editLbl, mxResources.get('edit') + ':', true, null, true);
 		edit.style.marginTop = '0px';
-		edit.indent = '24px';
+		editRow.appendChild(editLbl);
 
 		var file = this.getCurrentFile();
 		var editUrl = '';
@@ -7401,9 +8472,6 @@
 
 		var editSelect = document.createElement('select');
 		editSelect.style.maxWidth = '200px';
-		editSelect.style.width = 'auto';
-		editSelect.style.marginLeft = '8px';
-		editSelect.style.marginRight = '10px';
 		editSelect.className = 'geBtn';
 
 		var blankOption = document.createElement('option');
@@ -7429,11 +8497,13 @@
 					{
 						editUrl = value;
 						customOption.setAttribute('title', value);
+						editSelect.setAttribute('title', value);
 					}
 					else
 					{
 						editSelect.value = 'blank';
 						customOption.removeAttribute('title');
+						editSelect.removeAttribute('title');
 					}
 				}, mxResources.get('url'), null, null, null, null, function()
 				{
@@ -7441,6 +8511,10 @@
 				});
 				this.showDialog(dlg2.container, 300, 80, true, false);
 				dlg2.init();
+			}
+			else
+			{
+				editSelect.removeAttribute('title');
 			}
 		}));
 		
@@ -7591,10 +8665,10 @@
 	/**
 	 * 
 	 */
-	EditorUi.prototype.createUrlParameters = function(linkTarget, linkColor, lightbox, editLink, layers, params)
+	EditorUi.prototype.createUrlParameters = function(linkTarget, linkColor, lightbox, editLink, layers, params, linkIcons, tooltipIcons)
 	{
 		params = (params != null) ? params : [];
-		
+
 		if (lightbox)
 		{
 			params.push('lightbox=1');
@@ -7603,41 +8677,51 @@
 			{
 				params.push('target=' + linkTarget);
 			}
-			
+
 			if (linkColor != null && linkColor != mxConstants.NONE)
 			{
 				params.push('highlight=' + ((linkColor.charAt(0) == '#') ?
 					linkColor.substring(1) : linkColor));
 			}
-			
+
 			if (editLink != null && editLink.length > 0)
 			{
 				params.push('edit=' + encodeURIComponent(editLink));
 			}
-			
+
 			if (layers)
 			{
 				params.push('layers=1');
 			}
-			
+
+			if (linkIcons)
+			{
+				params.push('link-icons=1');
+			}
+
+			if (tooltipIcons)
+			{
+				params.push('tooltip-icons=1');
+			}
+
 			if (this.editor.graph.foldingEnabled)
 			{
 				params.push('nav=1');
 			}
 		}
-		
+
 		return params;
 	};
-	
+
 	/**
-	 * 
+	 *
 	 */
 	EditorUi.prototype.createLink = function(linkTarget, linkColor, allPages, lightbox, editLink, layers,
-		url, ignoreFile, params, useOpenParameter, currentPage, transparent, darkMode)
+		url, ignoreFile, params, useOpenParameter, currentPage, transparent, darkMode, linkIcons, tooltipIcons)
 	{
 		var file = this.getCurrentFile();
 		params = this.createUrlParameters(linkTarget, linkColor,
-			lightbox, editLink, layers, params);
+			lightbox, editLink, layers, params, linkIcons, tooltipIcons);
 		var addTitle = true;
 		var data = '';
 
@@ -7672,9 +8756,12 @@
 			data = '';
 		}
 
-		if (currentPage && this.currentPage != null)
+		// Accepts the page to open or true for the current page (legacy)
+		var linkPage = (currentPage == true) ? this.currentPage : currentPage;
+
+		if (linkPage != null && typeof linkPage.getId === 'function')
 		{
-			params.push('page-id=' + this.currentPage.getId());
+			params.push('page-id=' + linkPage.getId());
 		}
 
 		if (transparent)
@@ -7700,10 +8787,21 @@
 	 * 
 	 */
 	EditorUi.prototype.createHtml = function(publicUrl, zoomEnabled, initialZoom, linkTarget,
-		linkColor, fit, allPages, layers, tags, lightbox, editLink, fn, theme, useTagSettings)
+		linkColor, fit, allPages, layers, tags, lightbox, editLink, fn, theme, useTagSettings,
+		linkIcons, tooltipIcons)
 	{
 		var s = this.getBasenames();
 		var data = {};
+
+		if (linkIcons)
+		{
+			data['show-link-icons'] = true;
+		}
+
+		if (tooltipIcons)
+		{
+			data['show-tooltip-icons'] = true;
+		}
 		
 		if (linkColor != '' && linkColor != mxConstants.NONE)
 		{
@@ -7814,6 +8912,44 @@
 	/**
 	 * 
 	 */
+	/**
+	 * Adds a "Pages:" form row with an All Pages/Current Page select to the
+	 * given section and returns {row, select}. The row is only added for
+	 * multi-page files (row is null otherwise); the select defaults to all
+	 * pages.
+	 */
+	EditorUi.prototype.addPagesRow = function(section)
+	{
+		var pagesSelect = document.createElement('select');
+		pagesSelect.style.maxWidth = '260px';
+
+		var allPagesOption = document.createElement('option');
+		mxUtils.write(allPagesOption, mxResources.get('allPages'));
+		allPagesOption.setAttribute('value', 'allPages');
+		pagesSelect.appendChild(allPagesOption);
+
+		var currentPageOption = document.createElement('option');
+		mxUtils.write(currentPageOption, mxResources.get('currentPage'));
+		currentPageOption.setAttribute('value', 'currentPage');
+		pagesSelect.appendChild(currentPageOption);
+
+		var pagesRow = null;
+
+		if (this.pages != null && this.pages.length > 1)
+		{
+			pagesRow = document.createElement('div');
+			pagesRow.className = 'geDialogFormRow';
+			var pagesLbl = document.createElement('span');
+			pagesLbl.className = 'geDialogFormLabel';
+			mxUtils.write(pagesLbl, mxResources.get('pages') + ':');
+			pagesRow.appendChild(pagesLbl);
+			pagesRow.appendChild(pagesSelect);
+			section.appendChild(pagesRow);
+		}
+
+		return {row: pagesRow, select: pagesSelect};
+	};
+
 	EditorUi.prototype.showHtmlDialog = function(btnLabel, helpLink, publicUrl, fn)
 	{
 		var div = document.createElement('div');
@@ -7821,65 +8957,98 @@
 		
 		var hd = document.createElement('h3');
 		mxUtils.write(hd, mxResources.get('html'));
-		hd.style.cssText = 'width:100%;text-align:center;margin-top:0px;margin-bottom:12px';
 		div.appendChild(hd);
 
-		var radioSection = document.createElement('div');
-		radioSection.style.cssText = 'border-bottom:1px solid lightGray;padding-bottom:8px;margin-bottom:12px;';
+		var linkSelect = document.createElement('select');
 
-		var publicUrlRadio = document.createElement('input');
-		publicUrlRadio.style.cssText = 'margin-right:8px;margin-top:8px;margin-bottom:8px;';
-		publicUrlRadio.setAttribute('value', 'url');
-		publicUrlRadio.setAttribute('type', 'radio');
-		publicUrlRadio.setAttribute('name', 'type-embedhtmldialog');
+		linkSelect.className = 'geBtn';
+		// 4px inset keeps the 3px focus ring inside the dialog's
+		// overflow-clipping content wrappers
+		linkSelect.style.margin = '0 4px 8px 4px';
+		linkSelect.style.width = 'calc(100% - 8px)';
+		linkSelect.style.boxSizing = 'border-box';
 
-		var copyRadio = publicUrlRadio.cloneNode(true);
-		copyRadio.setAttribute('value', 'copy');
-		radioSection.appendChild(copyRadio);
-		
-		var span = document.createElement('span');
-		mxUtils.write(span, mxResources.get('includeCopyOfMyDiagram'));
-		radioSection.appendChild(span);
-		
-		mxUtils.br(radioSection);
-		radioSection.appendChild(publicUrlRadio);
+		var makeCopy = document.createElement('option');
+		mxUtils.write(makeCopy, mxResources.get('includeCopyOfMyDiagram'));
+		makeCopy.setAttribute('value', 'copy');
+		linkSelect.appendChild(makeCopy);
 
-		var span = document.createElement('span');
-		mxUtils.write(span, mxResources.get('publicDiagramUrl'));
-		radioSection.appendChild(span);
+		var publicLink = document.createElement('option');
+		publicLink.setAttribute('value', 'url');
+		linkSelect.appendChild(publicLink);
+
+		if (publicUrl != null)
+		{
+			mxUtils.write(publicLink, mxResources.get('publicDiagramUrl'));
+			publicLink.setAttribute('title', publicUrl);
+		}
+		else
+		{
+			mxUtils.write(publicLink, mxResources.get('publicDiagramUrl') +
+				' (' + mxResources.get('diagramIsNotPublic') + ')');
+			publicLink.setAttribute('disabled', 'disabled');
+		}
+
+		div.appendChild(linkSelect);
+		mxUtils.br(div);
 
 		var file = this.getCurrentFile();
-		
+
 		if (publicUrl == null && file != null && file.constructor == window.DriveFile)
 		{
+			var shareRow = document.createElement('div');
+			shareRow.style.marginBottom = '8px';
+
 			var testLink = document.createElement('a');
-			testLink.style.paddingLeft = '12px';
 			testLink.style.color = 'gray';
 			testLink.style.cursor = 'pointer';
 			mxUtils.write(testLink, mxResources.get('share'));
-			radioSection.appendChild(testLink);
-			
+			shareRow.appendChild(testLink);
+
 			mxEvent.addListener(testLink, 'click', mxUtils.bind(this, function()
 			{
 				this.hideDialog();
 				this.drive.showPermissions(file.getId(), file);
 			}));
-		}
 
-		copyRadio.setAttribute('checked', 'checked');
-		
-		if (publicUrl == null)
-		{
-			publicUrlRadio.setAttribute('disabled', 'disabled');
+			div.appendChild(shareRow);
 		}
-
-		div.appendChild(radioSection);
 
 		// --- Options section ---
 		var optSection = document.createElement('div');
 		optSection.className = 'geDialogSection';
 
 		var linkSection = this.addLinkSection(optSection);
+		var pages = this.addPagesRow(optSection);
+
+		var zoomRow = document.createElement('div');
+		zoomRow.className = 'geDialogCheckRow';
+		var zoom = document.createElement('input');
+		zoom.setAttribute('type', 'checkbox');
+		zoom.setAttribute('checked', 'checked');
+		zoom.defaultChecked = true;
+		zoom.style.marginRight = '8px';
+		zoomRow.appendChild(zoom);
+		var zoomLabel = document.createElement('label');
+		mxUtils.write(zoomLabel, mxResources.get('zoom') + ':');
+		zoomRow.appendChild(zoomLabel);
+		var zoomInput = document.createElement('input');
+		zoomInput.setAttribute('type', 'text');
+		zoomInput.style.width = '60px';
+		zoomInput.style.marginLeft = '4px';
+		zoomInput.value = '100%';
+		zoomRow.appendChild(zoomInput);
+		optSection.appendChild(zoomRow);
+
+		var fit = this.addCheckbox(optSection, mxResources.get('fit'),
+			true, null, null, null, null, null, true);
+		var lightbox = this.addCheckbox(optSection, mxResources.get('lightbox'),
+			true, null, null, null, null, null, true);
+
+		div.appendChild(optSection);
+
+		var advanced = this.addAdvancedSection(div);
+		var advSection = advanced.content;
 
 		var themeSelect = document.createElement('select');
 		themeSelect.style.maxWidth = '260px';
@@ -7907,59 +9076,13 @@
 		mxUtils.write(themeLbl, mxResources.get('appearance') + ':');
 		themeRow.appendChild(themeLbl);
 		themeRow.appendChild(themeSelect);
-		optSection.appendChild(themeRow);
-
-		var zoomRow = document.createElement('div');
-		zoomRow.className = 'geDialogCheckRow';
-		var zoom = document.createElement('input');
-		zoom.setAttribute('type', 'checkbox');
-		zoom.setAttribute('checked', 'checked');
-		zoom.defaultChecked = true;
-		zoom.style.marginRight = '8px';
-		zoomRow.appendChild(zoom);
-		var zoomLabel = document.createElement('label');
-		mxUtils.write(zoomLabel, mxResources.get('zoom') + ':');
-		zoomRow.appendChild(zoomLabel);
-		var zoomInput = document.createElement('input');
-		zoomInput.setAttribute('type', 'text');
-		zoomInput.style.width = '60px';
-		zoomInput.style.marginLeft = '4px';
-		zoomInput.value = '100%';
-		zoomRow.appendChild(zoomInput);
-		optSection.appendChild(zoomRow);
-
-		var fit = this.addCheckbox(optSection, mxResources.get('fit'),
-			true, null, null, null, null, null, true);
-		var hasPages = this.pages != null && this.pages.length > 1;
-		var allPages = this.addCheckbox(optSection, mxResources.get('allPages'),
-			hasPages, !hasPages, null, null, null, null, true);
-		var layers = this.addCheckbox(optSection, mxResources.get('layers'),
-			true, null, null, null, null, null, true);
-		var tags = this.addCheckbox(optSection, mxResources.get('tags'),
-			true, null, null, null, null, null, true);
-		var useTagSettings = this.addCheckbox(optSection, mxResources.get('useCurrentSettings'),
-			true, null, null, null, null, null, true);
-		useTagSettings.checkRow.style.paddingLeft = '24px';
-		var lightbox = this.addCheckbox(optSection, mxResources.get('lightbox'),
-			true, null, null, null, null, null, true);
-
-		mxEvent.addListener(tags, 'change', function()
-		{
-			if (tags.checked)
-			{
-				useTagSettings.removeAttribute('disabled');
-			}
-			else
-			{
-				useTagSettings.setAttribute('disabled', 'disabled');
-			}
-		});
+		advSection.appendChild(themeRow);
 
 		var editSection = null;
 
 		if (EditorUi.enableHtmlEditOption)
 		{
-			editSection = this.addEditButton(optSection, lightbox);
+			editSection = this.addEditButton(advSection, lightbox);
 			var edit = editSection.getEditInput();
 
 			mxEvent.addListener(lightbox, 'change', function()
@@ -7984,18 +9107,57 @@
 			});
 		}
 
-		div.appendChild(optSection);
+		var layers = this.addCheckbox(advSection, mxResources.get('layers'),
+			true, null, null, null, null, null, true);
+		var tags = this.addCheckbox(advSection, mxResources.get('tags'),
+			true, null, null, null, null, null, true);
+		var useTagSettings = this.addCheckbox(advSection, mxResources.get('useCurrentSettings'),
+			true, null, null, null, null, null, true);
+		useTagSettings.checkRow.style.paddingLeft = '24px';
+
+		var linkIcons = this.addCheckbox(advSection, mxResources.get('linkIcons'),
+			false, null, null, null, null, null, true);
+		var tooltipIcons = this.addCheckbox(advSection, mxResources.get('tooltipIcons'),
+			false, null, null, null, null, null, true);
+
+		mxEvent.addListener(tags, 'change', function()
+		{
+			if (tags.checked)
+			{
+				useTagSettings.removeAttribute('disabled');
+			}
+			else
+			{
+				useTagSettings.setAttribute('disabled', 'disabled');
+			}
+		});
+
+		mxEvent.addListener(lightbox, 'change', function()
+		{
+			if (lightbox.checked)
+			{
+				linkIcons.removeAttribute('disabled');
+				tooltipIcons.removeAttribute('disabled');
+			}
+			else
+			{
+				linkIcons.setAttribute('disabled', 'disabled');
+				tooltipIcons.setAttribute('disabled', 'disabled');
+			}
+		});
 
 		var dlg = new CustomDialog(this, div, mxUtils.bind(this, function()
 		{
-			fn((publicUrlRadio.checked) ? publicUrl : null, zoom.checked, zoomInput.value, linkSection.getTarget(),
-				linkSection.getColor(), fit.checked, allPages.checked, layers.checked, tags.checked,
+			fn((linkSelect.value == 'url') ? publicUrl : null, zoom.checked, zoomInput.value, linkSection.getTarget(),
+				linkSection.getColor(), fit.checked, pages.row != null &&
+				pages.select.value == 'allPages', layers.checked, tags.checked,
 				lightbox.checked, (editSection != null) ? editSection.getLink() : null,
 				(themeSelect != null) ? themeSelect.value : null,
-				tags.checked && useTagSettings.checked);
+				tags.checked && useTagSettings.checked,
+				linkIcons.checked, tooltipIcons.checked);
 		}), null, btnLabel, helpLink);
 		this.showDialog(dlg.container, 360, null, true, true);
-		copyRadio.focus();
+		linkSelect.focus();
 	};
 	
 	/**
@@ -8010,37 +9172,41 @@
 		
 		var hd = document.createElement('h3');
 		mxUtils.write(hd, title || mxResources.get('publish'));
-		hd.style.width = '100%';
-		hd.style.textAlign = 'center';
-		hd.style.marginTop = '0px';
-		hd.style.marginBottom = '10px';
 		div.appendChild(hd);
 		
 		var linkSelect = document.createElement('select');
 
 		linkSelect.className = 'geBtn';
-		linkSelect.style.marginBottom = '8px';
-		linkSelect.style.marginLeft = '0px';
-		linkSelect.style.width = '100%';
+		// 4px inset keeps the 3px focus ring inside the dialog's
+		// overflow-clipping content wrappers
+		linkSelect.style.margin = '0 4px 8px 4px';
+		linkSelect.style.width = 'calc(100% - 8px)';
 		linkSelect.style.boxSizing = 'border-box';
 
-		if (file == null || file.getHash() == '')
-		{
-			helpLink = (helpLink != null) ? helpLink : 'https://www.drawio.com/doc/faq/publish-diagram-as-link';
-			var makeCopy = document.createElement('option');
-			mxUtils.write(makeCopy, mxResources.get('makeCopy'));
-			makeCopy.setAttribute('value', 'copy');
-			linkSelect.appendChild(makeCopy);
-		}
+		helpLink = (helpLink != null) ? helpLink :
+			'https://www.drawio.com/docs/manual/export/publish-link/';
+
+		var makeCopy = document.createElement('option');
+		mxUtils.write(makeCopy, mxResources.get('includeCopyOfMyDiagram'));
+		makeCopy.setAttribute('value', 'copy');
+		linkSelect.appendChild(makeCopy);
 
 		var authRequired = document.createElement('option');
 		mxUtils.write(authRequired, mxResources.get('authorizationRequired'));
 		authRequired.setAttribute('value', 'auth');
 		linkSelect.appendChild(authRequired);
 
-		if (file == null || file.getHash() == '')
+		// Authorization requires a cloud-stored file - a device/browser file's
+		// link only resolves locally, there is no access to be controlled
+		if (file == null || file.getHash() == '' ||
+			file.getMode() == App.MODE_DEVICE ||
+			file.getMode() == App.MODE_BROWSER)
 		{
 			authRequired.setAttribute('disabled', 'disabled');
+		}
+		else
+		{
+			linkSelect.value = 'auth';
 		}
 
 		var publicLink = document.createElement('option');
@@ -8062,7 +9228,6 @@
 		
 		div.appendChild(linkSelect);
 		mxUtils.br(div);
-		linkSelect.focus();
 
 		// --- Options section ---
 		var optSection = document.createElement('div');
@@ -8109,46 +9274,87 @@
 
 
 
-		var allPagesSelect = document.createElement('select');
-		allPagesSelect.className = 'geBtn';
+		var pages = this.addPagesRow(optSection);
+		var allPagesSelect = pages.select;
 
-		var allPagesOption = document.createElement('option');
-		mxUtils.write(allPagesOption, mxResources.get('allPages'));
-		allPagesOption.setAttribute('value', 'allPages');
-		allPagesSelect.appendChild(allPagesOption);
-
-		var currentPageOption = document.createElement('option');
-		mxUtils.write(currentPageOption, mxResources.get('currentPage'));
-		currentPageOption.setAttribute('value', 'currentPage');
-		allPagesSelect.appendChild(currentPageOption);
-		
-		var currentPage = null;
-		
-		if (this.pages != null && this.currentPage != null &&
-			this.getPageIndex(this.currentPage) > 0)
+		// Page scope only applies to links that embed a copy of the diagram -
+		// authorization and public links reference the live file, which
+		// always contains all pages
+		if (pages.row != null && !showAllPagesOption)
 		{
-			var name = (this.currentPage != null) ? this.currentPage.getName() : '';
-
-			if (name.length > 16)
+			var updatePagesVisible = function()
 			{
-				name = name.substring(0, 16) + '...';
-			}
+				pages.row.style.display = (linkSelect.value == 'copy') ? '' : 'none';
+			};
 
-			if (showAllPagesOption)
-			{
-				var pagesRow = document.createElement('div');
-				pagesRow.className = 'geDialogFormRow';
-				var pagesLbl = document.createElement('span');
-				pagesLbl.className = 'geDialogFormLabel';
-				mxUtils.write(pagesLbl, mxResources.get('pages') + ':');
-				pagesRow.appendChild(pagesLbl);
-				pagesRow.appendChild(allPagesSelect);
-				optSection.appendChild(pagesRow);
-			}
-
-			currentPage = this.addCheckbox(optSection, mxResources.get('selectedPage') + ': ' + name,
-				null, null, null, null, null, null, true);
+			mxEvent.addListener(linkSelect, 'change', updatePagesVisible);
+			updatePagesVisible();
 		}
+
+		var initialPageSelect = null;
+
+		if (this.pages != null && this.pages.length > 1)
+		{
+			var initialPageRow = document.createElement('div');
+			initialPageRow.className = 'geDialogFormRow';
+			var initialPageLbl = document.createElement('span');
+			initialPageLbl.className = 'geDialogFormLabel';
+			mxUtils.write(initialPageLbl, mxResources.get('initialPage',
+				null, 'Initial Page') + ':');
+			initialPageRow.appendChild(initialPageLbl);
+
+			initialPageSelect = document.createElement('select');
+			initialPageSelect.style.maxWidth = '260px';
+
+			for (var i = 0; i < this.pages.length; i++)
+			{
+				var pageOption = document.createElement('option');
+				mxUtils.write(pageOption, this.pages[i].getName());
+				pageOption.setAttribute('value', i);
+
+				if (this.pages[i] == this.currentPage)
+				{
+					pageOption.setAttribute('selected', 'selected');
+				}
+
+				initialPageSelect.appendChild(pageOption);
+			}
+
+			initialPageRow.appendChild(initialPageSelect);
+			optSection.appendChild(initialPageRow);
+
+			// Initial page requires the other pages to be included
+			var updateInitialPageEnabled = function()
+			{
+				if (pages.row.style.display != 'none' &&
+					allPagesSelect.value == 'currentPage')
+				{
+					initialPageSelect.setAttribute('disabled', 'disabled');
+				}
+				else
+				{
+					initialPageSelect.removeAttribute('disabled');
+				}
+			};
+
+			mxEvent.addListener(allPagesSelect, 'change', updateInitialPageEnabled);
+			mxEvent.addListener(linkSelect, 'change', updateInitialPageEnabled);
+			updateInitialPageEnabled();
+		}
+
+		var lightbox = this.addCheckbox(optSection, mxResources.get('lightbox'),
+			true, null, null, !showFrameOption, null, null, true);
+
+		// Cannot disable lightbox in iframes
+		if (showFrameOption && lightbox.checkRow != null)
+		{
+			lightbox.checkRow.style.display = 'none';
+		}
+
+		div.appendChild(optSection);
+
+		var advanced = this.addAdvancedSection(div);
+		var advSection = advanced.content;
 
 		var themeSelect = document.createElement('select');
 		themeSelect.style.maxWidth = '260px';
@@ -8178,33 +9384,26 @@
 			mxUtils.write(themeLbl, mxResources.get('appearance') + ':');
 			themeRow.appendChild(themeLbl);
 			themeRow.appendChild(themeSelect);
-			optSection.appendChild(themeRow);
+			advSection.appendChild(themeRow);
 		}
 
-		var lightbox = this.addCheckbox(optSection, mxResources.get('lightbox'),
-			true, null, null, !showFrameOption, null, null, true);
-		var editSection = this.addEditButton(optSection, lightbox);
+		var editSection = this.addEditButton(advSection, lightbox);
 		var edit = editSection.getEditInput();
 
-		// Cannot disable lightbox in iframes
-		if (showFrameOption && lightbox.checkRow != null)
-		{
-			lightbox.checkRow.style.display = 'none';
-		}
-
-		var layers = this.addCheckbox(optSection, mxResources.get('layers'),
+		var layers = this.addCheckbox(advSection, mxResources.get('layers'),
 			true, null, null, null, null, null, true);
-		layers.checkRow.style.paddingLeft = '24px';
 
-		var tags = this.addCheckbox(optSection, mxResources.get('tags'),
+		var tags = this.addCheckbox(advSection, mxResources.get('tags'),
 			true, null, null, null, null, null, true);
-		tags.checkRow.style.paddingLeft = '24px';
 
-		var useTagSettings = this.addCheckbox(optSection, mxResources.get('useCurrentSettings'),
+		var useTagSettings = this.addCheckbox(advSection, mxResources.get('useCurrentSettings'),
 			true, null, null, null, null, null, true);
-		useTagSettings.checkRow.style.paddingLeft = '48px';
+		useTagSettings.checkRow.style.paddingLeft = '24px';
 
-		div.appendChild(optSection);
+		var linkIcons = this.addCheckbox(advSection, mxResources.get('linkIcons'),
+			false, null, null, null, null, null, true);
+		var tooltipIcons = this.addCheckbox(advSection, mxResources.get('tooltipIcons'),
+			false, null, null, null, null, null, true);
 
 		mxEvent.addListener(tags, 'change', function()
 		{
@@ -8225,6 +9424,8 @@
 				layers.removeAttribute('disabled');
 				edit.removeAttribute('disabled');
 				tags.removeAttribute('disabled');
+				linkIcons.removeAttribute('disabled');
+				tooltipIcons.removeAttribute('disabled');
 
 				if (tags.checked)
 				{
@@ -8237,6 +9438,8 @@
 				edit.setAttribute('disabled', 'disabled');
 				tags.setAttribute('disabled', 'disabled');
 				useTagSettings.setAttribute('disabled', 'disabled');
+				linkIcons.setAttribute('disabled', 'disabled');
+				tooltipIcons.setAttribute('disabled', 'disabled');
 			}
 
 			if (edit.checked && lightbox.checked)
@@ -8251,15 +9454,21 @@
 
 		var dlg = new CustomDialog(this, div, mxUtils.bind(this, function()
 		{
+			// The first page is the default landing page - only an explicit
+			// other page is encoded into the link and only if the link
+			// includes the other pages
 			fn(linkSection.getTarget(), linkSection.getColor(),
-				(currentPage == null) ? false : currentPage.checked,
+				(initialPageSelect == null || initialPageSelect.selectedIndex <= 0 ||
+					initialPageSelect.getAttribute('disabled') != null) ?
+					null : this.pages[initialPageSelect.selectedIndex],
 				lightbox.checked, editSection.getLink(), layers.checked,
 				(widthInput != null) ? widthInput.value : null,
 				(heightInput != null) ? heightInput.value : null,
 				tags.checked, linkSelect.value, (transparent != null) ?
 				transparent.checked : false, themeSelect.value,
 				allPagesSelect.value == 'allPages',
-				tags.checked && useTagSettings.checked);
+				tags.checked && useTagSettings.checked,
+				linkIcons.checked, tooltipIcons.checked);
 		}), null, mxResources.get('create'), helpLink, footer);
 		this.showDialog(dlg.container, 360, null, true, true);
 		
@@ -8276,9 +9485,9 @@
 				document.execCommand('selectAll', false, null);
 			}
 		}
-		else (linkSelect.parentNode == null)
+		else
 		{
-			linkSection.focus();
+			linkSelect.focus();
 		}
 	};
 
@@ -8292,7 +9501,6 @@
 		
 		var hd = document.createElement('h3');
 		mxUtils.write(hd, mxResources.get('image'));
-		hd.style.cssText = 'width:100%;text-align:center;margin-top:0px;margin-bottom:10px';
 		div.appendChild(hd);
 
 		if (showZoomBorder)
@@ -8332,21 +9540,40 @@
 
 		var selection = this.addCheckbox(optSection, mxResources.get('selectionOnly'),
 			this.lastExportSelectionOnly && !this.editor.graph.isSelectionEmpty(),
-			this.editor.graph.isSelectionEmpty());
+			this.editor.graph.isSelectionEmpty(), null, null, null, null, true);
 		var include = (hideInclude) ? null :
 			this.addCheckbox(optSection, mxResources.get('includeCopyOfMyDiagram'),
-				Editor.defaultIncludeDiagram);
+				Editor.defaultIncludeDiagram, null, null, null, null, null, true);
 
 		var graph = this.editor.graph;
+		var defaultTransparent = graph.background == mxConstants.NONE ||
+			graph.background == null;
 		var transparent = (hideInclude) ? null :
 			this.addCheckbox(optSection, mxResources.get('transparentBackground'),
-				graph.background == mxConstants.NONE || graph.background == null);
+				(this.lastExportTransparent != null) ?
+				this.lastExportTransparent : defaultTransparent,
+				null, null, null, null, null, true);
 
 		div.appendChild(optSection);
 
 		var dlg = new CustomDialog(this, div, mxUtils.bind(this, function()
 		{
 			this.lastExportSelectionOnly = selection.checked;
+
+			if (showZoomBorder)
+			{
+				this.lastExportZoom = zoomInput.value;
+				this.lastExportBorder = borderInput.value;
+			}
+
+			if (transparent != null)
+			{
+				// Kept only while it differs from the derived default so an
+				// unchanged setting keeps tracking the page background
+				this.lastExportTransparent = (transparent.checked == defaultTransparent) ?
+					null : transparent.checked;
+			}
+
 			var scale = parseInt(zoomInput.value) / 100 || 1;
 			var border = parseInt(borderInput.value) || 0;
 
@@ -8370,7 +9597,6 @@
 
 		var hd = document.createElement('h3');
 		mxUtils.write(hd, title);
-		hd.style.cssText = 'width:100%;text-align:center;margin-top:0px;margin-bottom:10px';
 		div.appendChild(hd);
 
 		// --- Dimensions section ---
@@ -8389,18 +9615,6 @@
 		formRow.appendChild(zoomInput);
 		dimSection.appendChild(formRow);
 
-		formRow = document.createElement('div');
-		formRow.className = 'geDialogFormRow';
-		var borderLbl = document.createElement('span');
-		borderLbl.className = 'geDialogFormLabel';
-		mxUtils.write(borderLbl, mxResources.get('borderWidth') + ':');
-		formRow.appendChild(borderLbl);
-		var borderInput = document.createElement('input');
-		borderInput.setAttribute('type', 'text');
-		borderInput.value = this.lastExportBorder || '0';
-		formRow.appendChild(borderInput);
-		dimSection.appendChild(formRow);
-
 		div.appendChild(dimSection);
 
 		// --- Options section ---
@@ -8409,7 +9623,7 @@
 
 		var selection = this.addCheckbox(optSection, mxResources.get('selectionOnly'),
 			this.lastExportSelectionOnly && !graph.isSelectionEmpty(),
-			graph.isSelectionEmpty());
+			graph.isSelectionEmpty(), null, null, null, null, true);
 
 		var cb6 = document.createElement('input');
 		cb6.setAttribute('disabled', 'disabled');
@@ -8457,7 +9671,6 @@
 		{
 			var cropRow = document.createElement('div');
 			cropRow.className = 'geDialogCheckRow';
-			cropRow.style.marginTop = '8px';
 			cropRow.appendChild(cb6);
 			var cropLbl = document.createElement('label');
 			mxUtils.write(cropLbl, mxResources.get('crop'));
@@ -8479,11 +9692,10 @@
 
 		if (graph.isSelectionEmpty())
 		{
-			if (exportOption)
+			if (exportOption && selection.checkRow != null &&
+				selection.checkRow.parentNode != null)
 			{
-				selection.style.display = 'none';
-				selection.nextSibling.style.display = 'none';
-				selection.nextSibling.nextSibling.style.display = 'none';
+				selection.checkRow.parentNode.removeChild(selection.checkRow);
 			}
 		}
 		else
@@ -8505,58 +9717,26 @@
 			});
 		}
 				
+		var defaultExportType = (!graph.isSelectionEmpty() &&
+			this.lastExportSelectionOnly) ? 'selectionOnly' : 'diagram';
+
+		if (exportOption && this.lastExportType != null &&
+			sizesOpt[this.lastExportType] != null)
+		{
+			exportSelect.value = this.lastExportType;
+
+			if (this.lastExportType == 'selectionOnly')
+			{
+				selection.checked = true;
+			}
+		}
+
 		var defaultTransparent = false; /*graph.background == mxConstants.NONE || graph.background == null*/;
+		var transparentVisible = format != 'jpeg' && format != 'webp';
 		var transparent = this.addCheckbox(optSection, mxResources.get('transparentBackground'),
-			defaultTransparent, null, null, format != 'jpeg' && format != 'webp');
-
-		var themeSelect = document.createElement('select');
-		themeSelect.style.maxWidth = '260px';
-
-		var lightOption = document.createElement('option');
-		lightOption.setAttribute('value', 'light');
-		mxUtils.write(lightOption, mxResources.get('light'));
-		themeSelect.appendChild(lightOption);
-
-		var darkOption = document.createElement('option');
-		darkOption.setAttribute('value', 'dark');
-		mxUtils.write(darkOption, mxResources.get('dark'));
-		themeSelect.appendChild(darkOption);
-
-		if (format == 'svg' && mxUtils.lightDarkColorSupported)
-		{
-			var autoOption = document.createElement('option');
-			autoOption.setAttribute('value', 'auto');
-			mxUtils.write(autoOption, mxResources.get('automatic'));
-			autoOption.setAttribute('selected', 'selected');
-			themeSelect.appendChild(autoOption);
-		}
-		else  if (Editor.isDarkMode())
-		{
-			darkOption.setAttribute('selected', 'selected');
-		}
-		else
-		{
-			lightOption.setAttribute('selected', 'selected');
-		}
-
-		var themeRow = document.createElement('div');
-		themeRow.className = 'geDialogFormRow';
-		var themeLbl = document.createElement('span');
-		themeLbl.className = 'geDialogFormLabel';
-		mxUtils.write(themeLbl, mxResources.get('appearance') + ':');
-		themeRow.appendChild(themeLbl);
-		themeRow.appendChild(themeSelect);
-		optSection.appendChild(themeRow);
-
-		var shadow = this.addCheckbox(optSection, mxResources.get('shadow'), graph.shadowVisible);
-
-		var grid = null;
-
-		if (format == 'png' || format == 'jpeg' || format == 'webp')
-		{
-			grid = this.addCheckbox(optSection, mxResources.get('grid'), false,
-				this.isOffline() || !Editor.canvasSupported, false, true);
-		}
+			(transparentVisible && this.lastExportTransparent != null) ?
+			this.lastExportTransparent : defaultTransparent,
+			null, null, transparentVisible, null, null, true);
 
 		div.appendChild(optSection);
 
@@ -8624,34 +9804,13 @@
 		cb7.setAttribute('type', 'checkbox');
 		cb7.id = 'geCheckbox-' + Editor.guid();
 
-		if (embedOption)
-		{
-			cb5.checked = (this.lastEmbedImages != null) ?
-				this.lastEmbedImages : true;
+		var cb8 = document.createElement('input');
+		cb8.setAttribute('type', 'checkbox');
+		cb8.id = 'geCheckbox-' + Editor.guid();
 
-			var embedImgRow = document.createElement('div');
-			embedImgRow.className = 'geDialogCheckRow';
-			embedImgRow.appendChild(cb5);
-			var lbl = document.createElement('label');
-			mxUtils.write(lbl, mxResources.get('embedImages'));
-			lbl.setAttribute('for', cb5.id);
-			embedImgRow.appendChild(lbl);
-			embedSection.appendChild(embedImgRow);
-
-			cb7.checked = (this.lastEmbedFonts != null) ?
-				this.lastEmbedImages : true;
-
-			var embedFontRow = document.createElement('div');
-			embedFontRow.className = 'geDialogCheckRow';
-			embedFontRow.appendChild(cb7);
-			var lbl = document.createElement('label');
-			mxUtils.write(lbl, mxResources.get('embedFonts'));
-			lbl.setAttribute('for', cb7.id);
-			embedFontRow.appendChild(lbl);
-			embedSection.appendChild(embedFontRow);
-
-			hasEmbedContent = true;
-		}
+		var cb9 = document.createElement('input');
+		cb9.setAttribute('type', 'checkbox');
+		cb9.id = 'geCheckbox-' + Editor.guid();
 
 		var linkSelect = document.createElement('select');
 		linkSelect.style.maxWidth = '260px';
@@ -8671,12 +9830,256 @@
 		mxUtils.write(selfOption, mxResources.get('openInThisWindow'));
 		linkSelect.appendChild(selfOption);
 
+		if (format == 'svg' && this.lastExportLinkTarget != null)
+		{
+			linkSelect.value = this.lastExportLinkTarget;
+
+			if (linkSelect.selectedIndex < 0)
+			{
+				linkSelect.value = 'auto';
+			}
+		}
+
 		//Inkscape doesn't support links from pdf to svg. Related to https://gitlab.com/inkscape/inbox/-/issues/583
 		var linkLost = document.createElement('div');
 		mxUtils.write(linkLost, mxResources.get('LinksLost'));
 		linkLost.style.margin = '7px';
 		linkLost.style.display = 'none';
 
+		if (hasEmbedContent)
+		{
+			div.appendChild(embedSection);
+		}
+
+		// --- Advanced section: width/height, DPI (PNG), border, appearance, shadow, grid ---
+		var advanced = this.addAdvancedSection(div);
+		var advSection = advanced.content;
+
+		// Base (unscaled) export dimensions used to keep zoom <-> width/height in sync.
+		var expBounds = graph.getGraphBounds();
+		var expScale = graph.view.scale;
+		var baseWidth = Math.max(1, Math.ceil(expBounds.width / expScale));
+		var baseHeight = Math.max(1, Math.ceil(expBounds.height / expScale));
+
+		// True once the user edits the zoom directly, after which a DPI pick no
+		// longer overrides the zoom (mirrors the legacy Advanced export dialog).
+		var zoomUserChanged = false;
+
+		function getExportScale()
+		{
+			return Math.max(0, parseFloat(zoomInput.value) || 100) / 100;
+		};
+
+		var sizeRow = document.createElement('div');
+		sizeRow.className = 'geDialogInlineFields';
+
+		var widthField = document.createElement('div');
+		widthField.className = 'geDialogInlineField';
+		var widthLbl = document.createElement('label');
+		mxUtils.write(widthLbl, mxResources.get('width') + ':');
+		widthField.appendChild(widthLbl);
+		var widthInput = document.createElement('input');
+		widthInput.setAttribute('type', 'number');
+		widthInput.value = Math.floor(baseWidth * getExportScale());
+		widthField.appendChild(widthInput);
+		sizeRow.appendChild(widthField);
+
+		var heightField = document.createElement('div');
+		heightField.className = 'geDialogInlineField';
+		var heightLbl = document.createElement('label');
+		mxUtils.write(heightLbl, mxResources.get('height') + ':');
+		heightField.appendChild(heightLbl);
+		var heightInput = document.createElement('input');
+		heightInput.setAttribute('type', 'number');
+		heightInput.value = Math.floor(baseHeight * getExportScale());
+		heightField.appendChild(heightInput);
+		sizeRow.appendChild(heightField);
+		advSection.appendChild(sizeRow);
+
+		function updateSizeFromZoom()
+		{
+			var s = getExportScale();
+			widthInput.value = Math.floor(baseWidth * s);
+			heightInput.value = Math.floor(baseHeight * s);
+		};
+
+		mxEvent.addListener(zoomInput, 'change', function()
+		{
+			zoomUserChanged = true;
+			zoomInput.value = parseFloat((getExportScale() * 100).toFixed(2)) + '%';
+			updateSizeFromZoom();
+		});
+
+		mxEvent.addListener(widthInput, 'change', function()
+		{
+			var s = parseInt(widthInput.value) / baseWidth;
+
+			if (s > 0)
+			{
+				zoomInput.value = parseFloat((s * 100).toFixed(2)) + '%';
+				heightInput.value = Math.floor(baseHeight * s);
+			}
+		});
+
+		mxEvent.addListener(heightInput, 'change', function()
+		{
+			var s = parseInt(heightInput.value) / baseHeight;
+
+			if (s > 0)
+			{
+				zoomInput.value = parseFloat((s * 100).toFixed(2)) + '%';
+				widthInput.value = Math.floor(baseWidth * s);
+			}
+		});
+
+		// DPI (PNG only): drives the zoom/scale and is written to the PNG pHYs chunk.
+		var dpiSelect = document.createElement('select');
+		var customDpi = document.createElement('input');
+
+		if (format == 'png')
+		{
+			var dpiValues = ['100', '200', '300', '400'];
+
+			for (var i = 0; i < dpiValues.length; i++)
+			{
+				var dpiOption = document.createElement('option');
+				dpiOption.setAttribute('value', dpiValues[i]);
+				mxUtils.write(dpiOption, dpiValues[i] + 'dpi');
+				dpiSelect.appendChild(dpiOption);
+			}
+
+			var dpiCustOption = document.createElement('option');
+			dpiCustOption.setAttribute('value', 'custom');
+			mxUtils.write(dpiCustOption, mxResources.get('custom'));
+			dpiSelect.appendChild(dpiCustOption);
+
+			customDpi.setAttribute('type', 'number');
+			customDpi.setAttribute('value', '100');
+			customDpi.setAttribute('min', '50');
+			customDpi.setAttribute('step', '50');
+			customDpi.style.display = 'none';
+
+			var dpiRow = document.createElement('div');
+			dpiRow.className = 'geDialogFormRow';
+			var dpiLbl = document.createElement('span');
+			dpiLbl.className = 'geDialogFormLabel';
+			mxUtils.write(dpiLbl, mxResources.get('dpi') + ':');
+			dpiRow.appendChild(dpiLbl);
+			dpiRow.appendChild(dpiSelect);
+			dpiRow.appendChild(customDpi);
+			advSection.appendChild(dpiRow);
+
+			if (this.lastExportDpi != null)
+			{
+				customDpi.value = this.lastExportDpi;
+				dpiSelect.value = this.lastExportDpi;
+
+				if (dpiSelect.selectedIndex < 0)
+				{
+					dpiSelect.value = 'custom';
+					dpiSelect.style.display = 'none';
+					customDpi.style.display = '';
+				}
+			}
+
+			mxEvent.addListener(dpiSelect, 'change', function()
+			{
+				if (dpiSelect.value == 'custom')
+				{
+					dpiSelect.style.display = 'none';
+					customDpi.style.display = '';
+					customDpi.focus();
+				}
+				else
+				{
+					customDpi.value = dpiSelect.value;
+
+					if (!zoomUserChanged)
+					{
+						zoomInput.value = dpiSelect.value + '%';
+						updateSizeFromZoom();
+					}
+				}
+			});
+
+			mxEvent.addListener(customDpi, 'change', function()
+			{
+				var dpi = parseInt(customDpi.value);
+
+				if (isNaN(dpi) || dpi <= 0)
+				{
+					customDpi.style.backgroundColor = 'red';
+				}
+				else
+				{
+					customDpi.style.backgroundColor = '';
+
+					if (!zoomUserChanged)
+					{
+						zoomInput.value = dpi + '%';
+						updateSizeFromZoom();
+					}
+				}
+			});
+		}
+
+		// Border (moved from the main section)
+		var borderRow = document.createElement('div');
+		borderRow.className = 'geDialogFormRow';
+		var borderLbl = document.createElement('span');
+		borderLbl.className = 'geDialogFormLabel';
+		mxUtils.write(borderLbl, mxResources.get('borderWidth') + ':');
+		borderRow.appendChild(borderLbl);
+		var borderInput = document.createElement('input');
+		borderInput.setAttribute('type', 'text');
+		borderInput.value = this.lastExportBorder || '0';
+		borderRow.appendChild(borderInput);
+		advSection.appendChild(borderRow);
+
+		// Appearance / theme (moved from the main section)
+		var themeSelect = document.createElement('select');
+		themeSelect.style.maxWidth = '260px';
+
+		var lightOption = document.createElement('option');
+		lightOption.setAttribute('value', 'light');
+		mxUtils.write(lightOption, mxResources.get('light'));
+		themeSelect.appendChild(lightOption);
+
+		var darkOption = document.createElement('option');
+		darkOption.setAttribute('value', 'dark');
+		mxUtils.write(darkOption, mxResources.get('dark'));
+		themeSelect.appendChild(darkOption);
+
+		var defaultTheme = (Editor.isDarkMode()) ? 'dark' : 'light';
+
+		if (format == 'svg' && mxUtils.lightDarkColorSupported)
+		{
+			var autoThemeOption = document.createElement('option');
+			autoThemeOption.setAttribute('value', 'auto');
+			mxUtils.write(autoThemeOption, mxResources.get('automatic'));
+			themeSelect.appendChild(autoThemeOption);
+			defaultTheme = 'auto';
+		}
+
+		themeSelect.value = (this.lastExportTheme != null) ?
+			this.lastExportTheme : defaultTheme;
+
+		// Stored override may be an option that doesn't exist for this format
+		if (themeSelect.selectedIndex < 0)
+		{
+			themeSelect.value = defaultTheme;
+		}
+
+		var themeRow = document.createElement('div');
+		themeRow.className = 'geDialogFormRow';
+		var themeLbl = document.createElement('span');
+		themeLbl.className = 'geDialogFormLabel';
+		mxUtils.write(themeLbl, mxResources.get('appearance') + ':');
+		themeRow.appendChild(themeLbl);
+		themeRow.appendChild(themeSelect);
+		advSection.appendChild(themeRow);
+
+		// Links target (SVG only) — sits with the other form rows, above the checkboxes
 		if (format == 'svg')
 		{
 			var linksRow = document.createElement('div');
@@ -8686,14 +10089,78 @@
 			mxUtils.write(linksLbl, mxResources.get('links') + ':');
 			linksRow.appendChild(linksLbl);
 			linksRow.appendChild(linkSelect);
-			embedSection.appendChild(linksRow);
-			embedSection.appendChild(linkLost);
-			hasEmbedContent = true;
+			advSection.appendChild(linksRow);
+			advSection.appendChild(linkLost);
 		}
 
-		if (hasEmbedContent)
+		// Shadow (moved from the main section)
+		var defaultShadow = graph.shadowVisible == true;
+		var shadow = this.addCheckbox(advSection, mxResources.get('shadow'),
+			(this.lastExportShadow != null) ? this.lastExportShadow : defaultShadow,
+			null, null, null, null, null, true);
+
+		// Grid (moved from the main section)
+		var grid = null;
+		var gridDisabled = format != 'svg' && (this.isOffline() || !Editor.canvasSupported);
+
+		if (format == 'png' || format == 'jpeg' || format == 'webp' || format == 'svg')
 		{
-			div.appendChild(embedSection);
+			grid = this.addCheckbox(advSection, mxResources.get('grid'),
+				(!gridDisabled && this.lastExportGrid != null) ? this.lastExportGrid : false,
+				gridDisabled, false, true, null, null, true);
+		}
+
+		// Embed images / fonts / cell metadata (SVG only, gated by embedOption)
+		if (embedOption)
+		{
+			cb5.checked = (this.lastEmbedImages != null) ?
+				this.lastEmbedImages : true;
+
+			var embedImgRow = document.createElement('div');
+			embedImgRow.className = 'geDialogCheckRow';
+			embedImgRow.appendChild(cb5);
+			var lbl = document.createElement('label');
+			mxUtils.write(lbl, mxResources.get('embedImages'));
+			lbl.setAttribute('for', cb5.id);
+			embedImgRow.appendChild(lbl);
+			advSection.appendChild(embedImgRow);
+
+			cb7.checked = (this.lastEmbedFonts != null) ?
+				this.lastEmbedFonts : Editor.embedSvgFonts;
+
+			var embedFontRow = document.createElement('div');
+			embedFontRow.className = 'geDialogCheckRow';
+			embedFontRow.appendChild(cb7);
+			var lbl = document.createElement('label');
+			mxUtils.write(lbl, mxResources.get('embedFonts'));
+			lbl.setAttribute('for', cb7.id);
+			embedFontRow.appendChild(lbl);
+			advSection.appendChild(embedFontRow);
+
+			cb8.checked = (this.lastEmbedCellMetadata != null) ?
+				this.lastEmbedCellMetadata : false;
+
+			var embedMetaRow = document.createElement('div');
+			embedMetaRow.className = 'geDialogCheckRow';
+			embedMetaRow.appendChild(cb8);
+			var lbl = document.createElement('label');
+			mxUtils.write(lbl, mxResources.get('embedCellMetadata'));
+			lbl.setAttribute('for', cb8.id);
+			embedMetaRow.appendChild(lbl);
+			advSection.appendChild(embedMetaRow);
+
+			// Tooltip, link and note icons with hover and click popups
+			cb9.checked = (this.lastEmbedIcons != null) ?
+				this.lastEmbedIcons : false;
+
+			var iconsRow = document.createElement('div');
+			iconsRow.className = 'geDialogCheckRow';
+			iconsRow.appendChild(cb9);
+			var lbl = document.createElement('label');
+			mxUtils.write(lbl, mxResources.get('icons'));
+			lbl.setAttribute('for', cb9.id);
+			iconsRow.appendChild(lbl);
+			advSection.appendChild(iconsRow);
 		}
 
 		var dlg = new CustomDialog(this, div, mxUtils.bind(this, function()
@@ -8701,9 +10168,57 @@
 			this.lastExportSelectionOnly = selection.checked;
 			this.lastExportBorder = borderInput.value;
 			this.lastExportZoom = zoomInput.value;
-			this.lastEmbedImages = cb5.checked;
-			this.lastEmbedFonts = cb7.checked;
-			this.lastEmbedInclude = includeSelect.value;
+
+			// Settings with derived defaults are kept for the session only
+			// while they differ from the default (null resumes tracking it)
+			// and are saved only where the control applies, so that eg. a
+			// JPEG export cannot clear the transparency chosen for PNG
+			if (transparentVisible)
+			{
+				this.lastExportTransparent = (transparent.checked == defaultTransparent) ?
+					null : transparent.checked;
+			}
+
+			this.lastExportTheme = (themeSelect.value == defaultTheme) ?
+				null : themeSelect.value;
+			this.lastExportShadow = (shadow.checked == defaultShadow) ?
+				null : shadow.checked;
+
+			if (grid != null && !gridDisabled)
+			{
+				this.lastExportGrid = (grid.checked) ? true : null;
+			}
+
+			if (format == 'svg')
+			{
+				this.lastExportLinkTarget = (linkSelect.value == 'auto') ?
+					null : linkSelect.value;
+			}
+
+			if (format == 'png')
+			{
+				var dpi = parseInt(customDpi.value);
+				this.lastExportDpi = (!isNaN(dpi) && dpi > 0 && dpi != 100) ? dpi : null;
+			}
+
+			if (exportOption)
+			{
+				this.lastExportType = (exportSelect.value == defaultExportType) ?
+					null : exportSelect.value;
+			}
+
+			if (embedOption)
+			{
+				this.lastEmbedImages = cb5.checked;
+				this.lastEmbedFonts = cb7.checked;
+				this.lastEmbedCellMetadata = cb8.checked;
+				this.lastEmbedIcons = cb9.checked;
+			}
+
+			if (format == 'png' || format == 'svg')
+			{
+				this.lastEmbedInclude = includeSelect.value;
+			}
 
 			if (callback != null)
 			{
@@ -8712,7 +10227,10 @@
 					(format == 'png' || format == 'svg') && includeSelect.value == 'currentPage',
 					linkSelect.value, (grid != null) ? grid.checked : null,
 					(themeSelect != null) ? themeSelect.value : null,
-					exportSelect.value, cb7.checked);
+					exportSelect.value, cb7.checked, cb8.checked && embedOption,
+					(format == 'png' && parseInt(customDpi.value) > 0 &&
+						parseInt(customDpi.value) != 100) ? parseInt(customDpi.value) : null,
+					cb9.checked && embedOption);
 			}
 		}), null, btnLabel, helpLink);
 		this.showDialog(dlg.container, 360, null, true, true, null, null, null, null, true);
@@ -8731,7 +10249,7 @@
 	/**
 	 * 
 	 */
-	EditorUi.prototype.showEmbedImageDialog = function(fn, title, imageLabel, shadowEnabled, helpLink)
+	EditorUi.prototype.showEmbedImageDialog = function(fn, title, imageLabel, shadowEnabled, helpLink, themeOption, pagesOption)
 	{
 		var div = document.createElement('div');
 		var graph = this.editor.graph;
@@ -8740,12 +10258,13 @@
 		{
 			var hd = document.createElement('h3');
 			mxUtils.write(hd, title);
-			hd.style.cssText = 'width:100%;text-align:center;margin-top:0px;margin-bottom:10px';
 			div.appendChild(hd);
 		}
 
 		var optSection = document.createElement('div');
 		optSection.className = 'geDialogSection';
+
+		var pages = (pagesOption) ? this.addPagesRow(optSection) : null;
 
 		var fit = this.addCheckbox(optSection, mxResources.get('fit'), true,
 			null, null, null, null, null, true);
@@ -8756,15 +10275,63 @@
 			false, null, null, null, null, null, true);
 		var lightbox = this.addCheckbox(optSection, mxResources.get('lightbox'), true,
 			null, null, null, null, null, true);
-		var editSection = this.addEditButton(optSection, lightbox);
+
+		div.appendChild(optSection);
+
+		var advanced = this.addAdvancedSection(div);
+		var advSection = advanced.content;
+
+		var themeSelect = null;
+
+		if (themeOption)
+		{
+			themeSelect = document.createElement('select');
+			themeSelect.style.maxWidth = '260px';
+
+			var lightOption = document.createElement('option');
+			lightOption.setAttribute('value', 'light');
+			mxUtils.write(lightOption, mxResources.get('light'));
+			themeSelect.appendChild(lightOption);
+
+			var darkOption = document.createElement('option');
+			darkOption.setAttribute('value', 'dark');
+			mxUtils.write(darkOption, mxResources.get('dark'));
+			themeSelect.appendChild(darkOption);
+
+			if (mxUtils.lightDarkColorSupported)
+			{
+				var autoThemeOption = document.createElement('option');
+				autoThemeOption.setAttribute('value', 'auto');
+				mxUtils.write(autoThemeOption, mxResources.get('automatic'));
+				themeSelect.appendChild(autoThemeOption);
+				themeSelect.value = 'auto';
+			}
+			else
+			{
+				themeSelect.value = (Editor.isDarkMode()) ? 'dark' : 'light';
+			}
+
+			var themeRow = document.createElement('div');
+			themeRow.className = 'geDialogFormRow';
+			var themeLbl = document.createElement('span');
+			themeLbl.className = 'geDialogFormLabel';
+			mxUtils.write(themeLbl, mxResources.get('appearance') + ':');
+			themeRow.appendChild(themeLbl);
+			themeRow.appendChild(themeSelect);
+			advSection.appendChild(themeRow);
+		}
+
+		var editSection = this.addEditButton(advSection, lightbox);
 		var edit = editSection.getEditInput();
 
 		var hasLayers = graph.model.getChildCount(graph.model.getRoot()) > 1;
-		var layers = this.addCheckbox(optSection, mxResources.get('layers'), hasLayers, !hasLayers,
+		var layers = this.addCheckbox(advSection, mxResources.get('layers'), hasLayers, !hasLayers,
 			null, null, null, null, true);
-		layers.checkRow.style.paddingLeft = '24px';
 
-		div.appendChild(optSection);
+		var linkIcons = this.addCheckbox(advSection, mxResources.get('linkIcons'),
+			false, null, null, null, null, null, true);
+		var tooltipIcons = this.addCheckbox(advSection, mxResources.get('tooltipIcons'),
+			false, null, null, null, null, null, true);
 
 		mxEvent.addListener(lightbox, 'change', function()
 		{
@@ -8775,12 +10342,26 @@
 					layers.removeAttribute('disabled');
 				}
 
+				if (pages != null)
+				{
+					pages.select.removeAttribute('disabled');
+				}
+
 				edit.removeAttribute('disabled');
+				linkIcons.removeAttribute('disabled');
+				tooltipIcons.removeAttribute('disabled');
 			}
 			else
 			{
+				if (pages != null)
+				{
+					pages.select.setAttribute('disabled', 'disabled');
+				}
+
 				layers.setAttribute('disabled', 'disabled');
 				edit.setAttribute('disabled', 'disabled');
+				linkIcons.setAttribute('disabled', 'disabled');
+				tooltipIcons.setAttribute('disabled', 'disabled');
 			}
 
 			if (edit.checked && lightbox.checked)
@@ -8796,7 +10377,11 @@
 		var dlg = new CustomDialog(this, div, mxUtils.bind(this, function()
 		{
 			fn(fit.checked, shadow.checked, image.checked, lightbox.checked,
-				editSection.getLink(), layers.checked);
+				editSection.getLink(), layers.checked,
+				linkIcons.checked, tooltipIcons.checked,
+				(themeSelect != null) ? themeSelect.value : null,
+				(pages != null) ? (pages.row != null &&
+					pages.select.value == 'allPages') : null);
 		}), null, mxResources.get('embed'), helpLink);
 		this.showDialog(dlg.container, 280, null, true, true);
 	};
@@ -8804,16 +10389,16 @@
 	/**
 	 * 
 	 */
-	EditorUi.prototype.createEmbedImage = function(fit, shadow, retina, lightbox, edit, layers, fn, err)
+	EditorUi.prototype.createEmbedImage = function(fit, shadow, retina, lightbox, edit, layers, linkIcons, tooltipIcons, fn, err)
 	{
 		var bounds = this.editor.graph.getGraphBounds();
 		var page = this.getSelectedPageIndex();
-		
+
 		function doUpdate(dataUri)
 		{
    			var onclick = ' ';
    			var css = '';
-   			
+
    			// Adds double click handling
 			if (lightbox)
 			{
@@ -8822,7 +10407,9 @@
 					"img.getAttribute('src')),'*');window.removeEventListener('message',r);}};window.addEventListener('message',r);img.wnd=window.open('" + EditorUi.lightboxHost + "/?client=1" +
 					((page != null) ? ("&page=" + page) : "") +
 					((edit) ? "&edit=_blank" : "") +
-					((layers) ? '&layers=1' : '') + "');}})(this);\"";
+					((layers) ? '&layers=1' : '') +
+					((linkIcons) ? '&link-icons=1' : '') +
+					((tooltipIcons) ? '&tooltip-icons=1' : '') + "');}})(this);\"";
 				css += 'cursor:pointer;';
 			}
    			
@@ -8852,6 +10439,10 @@
 		   	{
 		   		err({message: mxResources.get('unknownError')});
 		   	}), null, true, (retina) ? 2 : 1, null, shadow, null, null, Editor.defaultBorder);
+		}
+		else if (!this.isRemoteExportEnabled())
+		{
+			err({message: mxResources.get('notAvailable')});
 		}
 		else
 		{
@@ -8897,10 +10488,33 @@
 	/**
 	 * 
 	 */
-	EditorUi.prototype.createEmbedSvg = function(fit, shadow, image, lightbox, edit, layers, fn)
+	EditorUi.prototype.createEmbedSvg = function(fit, shadow, image, lightbox, edit, layers, linkIcons, tooltipIcons, theme, allPages, fn)
 	{
-		var svgRoot = this.editor.graph.getSvg(null, null, null, null,
-			null, null, null, null, null, null, !image, 'auto');
+		theme = (theme != null) ? theme : 'auto';
+		allPages = (allPages != null) ? allPages : true;
+		var page = this.getSelectedPageIndex();
+		var prevLightDarkColorSupported = mxUtils.lightDarkColorSupported;
+		var prevPreferDarkColor = mxUtils.preferDarkColor;
+
+		// Resolves adaptive colors to one side for fixed themes
+		if (theme == 'light' || theme == 'dark')
+		{
+			mxUtils.lightDarkColorSupported = false;
+			mxUtils.preferDarkColor = theme == 'dark';
+		}
+
+		var svgRoot = null;
+
+		try
+		{
+			svgRoot = this.editor.graph.getSvg(null, null, null, null,
+				null, null, null, null, null, null, !image, theme);
+		}
+		finally
+		{
+			mxUtils.lightDarkColorSupported = prevLightDarkColorSupported;
+			mxUtils.preferDarkColor = prevPreferDarkColor;
+		}
 		
 		// Keeps hashtag links on same page
 		var links = svgRoot.getElementsByTagName('a');
@@ -8921,7 +10535,8 @@
 		
 		if (lightbox)
 		{
-			svgRoot.setAttribute('content', this.getFileData(true));
+			svgRoot.setAttribute('content', this.getFileData(
+				true, null, null, null, null, !allPages));
 		}
 		
 		// Adds shadow filter
@@ -8942,7 +10557,10 @@
 				// KNOWN: Message passing does not seem to work in IE11
 				onclick = "onclick=\"(function(img){if(img.wnd!=null&&!img.wnd.closed){img.wnd.focus();}else{var r=function(evt){if(evt.data=='ready'&&evt.source==img.wnd){img.wnd.postMessage(decodeURIComponent(" +
 					"img.getAttribute('src')),'*');window.removeEventListener('message',r);}};window.addEventListener('message',r);img.wnd=window.open('" + EditorUi.lightboxHost + "/?client=1" +
-					((edit) ? "&edit=_blank" : "") + ((layers) ? '&layers=1' : '') + "');}})(this);\"";
+					((allPages && page != null) ? ("&page=" + page) : "") +
+					((edit) ? "&edit=_blank" : "") + ((layers) ? '&layers=1' : '') +
+					((linkIcons) ? '&link-icons=1' : '') +
+					((tooltipIcons) ? '&tooltip-icons=1' : '') + "');}})(this);\"";
 				css += 'cursor:pointer;';
 			}
    			
@@ -8965,8 +10583,6 @@
 			// Adds double click handling
 			if (lightbox)
 			{
-				var page = this.getSelectedPageIndex();
-				
 				// KNOWN: Message passing does not seem to work in IE11
 				var js = "(function(svg){var src=window.event.target||window.event.srcElement;" +
 					// Ignores link events
@@ -8979,8 +10595,10 @@
 					"window.addEventListener('message',r);" +
 					// Opens lightbox window
 					"svg.wnd=window.open('" + EditorUi.lightboxHost + "/?client=1" +
-					((page != null) ? ("&page=" + page) : "") +
-					((edit) ? "&edit=_blank" : "") + ((layers) ? '&layers=1' : '') + "');}}})(this);";
+					((allPages && page != null) ? ("&page=" + page) : "") +
+					((edit) ? "&edit=_blank" : "") + ((layers) ? '&layers=1' : '') +
+					((linkIcons) ? '&link-icons=1' : '') +
+					((tooltipIcons) ? '&tooltip-icons=1' : '') + "');}}})(this);";
 				svgRoot.setAttribute('onclick', js);
 				css += 'cursor:pointer;';
 			}
@@ -8997,9 +10615,12 @@
 			
 			if (css != '')
 			{
-				svgRoot.setAttribute('style', css);
+				// Appends to keep color-scheme added in getSvg
+				var style = svgRoot.getAttribute('style');
+				svgRoot.setAttribute('style', ((style != null &&
+					style.length > 0) ? style + ' ' : '') + css);
 			}
-			
+
 			// Adds CSS
 			this.editor.addFontCss(svgRoot);
 			
@@ -9133,7 +10754,12 @@
 	 */
 	EditorUi.prototype.getSvgFileProperties = function(node)
 	{
-		return this.getPngFileProperties(node);
+		var props = this.getPngFileProperties(node);
+
+		props.embedFonts = (node != null && node.hasAttribute('embedFonts')) ?
+			node.getAttribute('embedFonts') != 'false' : Editor.embedSvgFonts;
+
+		return props;
 	};
 	
 	/**
@@ -9168,6 +10794,14 @@
 		}
 		
 		return {scale: scale, border: border};
+	};
+	
+	/**
+	 * 
+	 */
+	EditorUi.prototype.getPdfFileProperties = function(node)
+	{
+		return {notes: node != null && node.getAttribute('notes') == 'true'};
 	};
 	
 	/**
@@ -9271,17 +10905,58 @@
 	}
 
 	/**
+	 * Invokes the given render function with the given image export while
+	 * the fonts of the rendered cells are collected into the given font
+	 * lookup instead of the global font lookup and returns the result of
+	 * the function. The image export must be passed to getSvg in fn.
+	 */
+	EditorUi.prototype.getSvgWithFontLookup = function(fontLookup, imgExport, fn)
+	{
+		var prevAddFont = Graph.addFont;
+
+		Graph.addFont = function(name, url, callback, elementLookup)
+		{
+			prevAddFont.call(this, name, url, callback, fontLookup);
+		};
+
+		// Adds fonts from cell styles to the font lookup
+		var prevDrawCellState = imgExport.drawCellState;
+
+		imgExport.drawCellState = function(state, canvas)
+		{
+			if (state != null)
+			{
+				Graph.processFontStyle(state.style);
+			}
+
+			prevDrawCellState.apply(this, arguments);
+		};
+
+		try
+		{
+			return fn();
+		}
+		finally
+		{
+			// Restores global font registration
+			Graph.addFont = prevAddFont;
+		}
+	};
+
+	/**
 	 * Returns the SVG of the diagram with embedded XML. If a callback function is
-	 * used, the images are converted to data URIs.
+	 * used, the images are converted to data URIs and fonts are embedded async.
+	 * Without a callback, fonts are embedded synchronously from the local font
+	 * cache, using external font references while the cache is being loaded.
 	 */
 	EditorUi.prototype.getEmbeddedSvg = function(xml, graph, url, noHeader, callback, ignoreSelection,
-		redirect, embedImages, background, scale, border, shadow, theme)
+		redirect, embedImages, background, scale, border, shadow, theme, addSvgData, embedFonts)
 	{
 		embedImages = (embedImages != null) ? embedImages : true;
 		border = (border != null) ? border : 0;
 
 		var bg = (background != null) ? background : graph.background;
-		
+
 		if (bg == mxConstants.NONE)
 		{
 			bg = null;
@@ -9295,10 +10970,16 @@
 
 		// Sets or disables alternate text for foreignObjects. Disabling is needed
 		// because PhantomJS seems to ignore switch statements and paint all text.
-		var imgExport = this.editor.graph.createSvgImageExport(xml != null);
-		var svgRoot = graph.getSvg(bg, scale, border, null, null, ignoreSelection, null,
-			imgExport, null, graph.shadowVisible || shadow, null, theme, 'diagram');
-		
+		var imgExport = this.editor.graph.createSvgImageExport(xml != null, addSvgData);
+		var tempFontLookup = Object.create(null);
+
+		// Restricts font embedding to fonts used in rendered cells
+		var svgRoot = this.getSvgWithFontLookup(tempFontLookup, imgExport, function()
+		{
+			return graph.getSvg(bg, scale, border, null, null, ignoreSelection, null,
+				imgExport, null, graph.shadowVisible || shadow, null, theme, 'diagram');
+		});
+
 		if (graph.shadowVisible || shadow)
 		{
 			graph.addSvgShadow(svgRoot, null, null, border == 0);
@@ -9356,50 +11037,110 @@
 				{
 					done(svgRoot);
 				}
-			}));
+			}), embedFonts, tempFontLookup);
 		}
 		else
 		{
+			// Embeds fonts synchronously if all fonts are in the local
+			// cache, otherwise the fonts are loaded into the cache for
+			// the next call and external references are used below
+			var fontsEmbedded = false;
+
+			this.embedFonts(svgRoot, function()
+			{
+				fontsEmbedded = true;
+			}, embedFonts, tempFontLookup);
+
+			if (!fontsEmbedded)
+			{
+				try
+				{
+					// Global font CSS was added above if it was resolved
+					if (this.editor.resolvedFontCss == null)
+					{
+						this.editor.addFontCss(svgRoot);
+					}
+
+					var extFontCss = this.editor.graph.getExtFontCss(tempFontLookup);
+
+					if (extFontCss.length > 0)
+					{
+						this.editor.addFontCss(svgRoot, extFontCss);
+					}
+				}
+				catch (e)
+				{
+					// ignore
+				}
+			}
+
 			return done(svgRoot);
 		}
 	};
 	
 	/**
-	 * Embeds font CSS as data URIs into the given svgRoot.
+	 * Embeds font CSS as data URIs into the given svgRoot. If embedFonts is
+	 * false, external font references are added instead. Default for
+	 * embedFonts is Editor.embedSvgFonts. The optional font lookup limits
+	 * the custom fonts, default is Graph.customFontElements.
 	 */
-	EditorUi.prototype.embedFonts = function(svgRoot, callback)
+	EditorUi.prototype.embedFonts = function(svgRoot, callback, embedFonts, fontLookup)
 	{
-		this.editor.loadFonts(mxUtils.bind(this, function()
+		embedFonts = (embedFonts != null) ? embedFonts : Editor.embedSvgFonts;
+
+		if (!embedFonts)
 		{
 			try
 			{
-				if (this.editor.resolvedFontCss != null)
+				this.editor.addFontCss(svgRoot);
+				var extFontCss = this.editor.graph.getExtFontCss(fontLookup);
+
+				if (extFontCss.length > 0)
 				{
-					this.editor.addFontCss(svgRoot, this.editor.resolvedFontCss);
+					this.editor.addFontCss(svgRoot, extFontCss);
 				}
-				
-				this.editor.embedExtFonts(mxUtils.bind(this, function(extFontsEmbeddedCss)
-				{
-					try
-					{
-						if (extFontsEmbeddedCss != null)
-						{
-							this.editor.addFontCss(svgRoot, extFontsEmbeddedCss);
-						}
-						
-						callback(svgRoot);
-					}
-					catch (e)
-					{
-						callback(svgRoot);
-					}
-				}));
 			}
 			catch (e)
 			{
-				callback(svgRoot);
+				// ignore
 			}
-		}));
+
+			callback(svgRoot);
+		}
+		else
+		{
+			this.editor.loadFonts(mxUtils.bind(this, function()
+			{
+				try
+				{
+					if (this.editor.resolvedFontCss != null)
+					{
+						this.editor.addFontCss(svgRoot, this.editor.resolvedFontCss);
+					}
+
+					this.editor.embedExtFonts(mxUtils.bind(this, function(extFontsEmbeddedCss)
+					{
+						try
+						{
+							if (extFontsEmbeddedCss != null)
+							{
+								this.editor.addFontCss(svgRoot, extFontsEmbeddedCss);
+							}
+
+							callback(svgRoot);
+						}
+						catch (e)
+						{
+							callback(svgRoot);
+						}
+					}), fontLookup);
+				}
+				catch (e)
+				{
+					callback(svgRoot);
+				}
+			}));
+		}
 	};
 	
 	/**
@@ -10073,8 +11814,68 @@
 				delayed();
 			}
 		}), onerror);
-	};	
-	
+	};
+
+	/**
+	 * Imports the given Gliffy data with the client-side converter,
+	 * mirroring importVisio/importGraphML: loads the converter bundle on
+	 * demand and returns the diagram XML via done. Conversion is local
+	 * only - the editor never posts diagram data to a conversion service.
+	 * error receives an object whose status is 413 when a converter limit
+	 * was hit, so the existing caller messaging keeps working
+	 * (413 -> diagramTooLarge).
+	 */
+	EditorUi.prototype.importGliffy = function(data, done, error, filename)
+	{
+		var handleError = mxUtils.bind(this, function(e)
+		{
+			if (error != null)
+			{
+				var limitHit = typeof mxGliffyToDrawio !== 'undefined' &&
+					typeof mxGliffyToDrawio.LimitExceededException === 'function' &&
+					e instanceof mxGliffyToDrawio.LimitExceededException;
+
+				error({status: (limitHit) ? 413 : 500,
+					message: (e != null && e.message != null) ? e.message :
+						mxResources.get('serviceUnavailableOrBlocked')});
+			}
+		});
+
+		this.loadGliffy(mxUtils.bind(this, function()
+		{
+			var xml = null;
+
+			try
+			{
+				xml = mxGliffyToDrawio.convert(data);
+			}
+			catch (e)
+			{
+				handleError(e);
+				return;
+			}
+
+			if (xml != null)
+			{
+				try
+				{
+					EditorUi.logEvent({category: 'GLIFFY-IMPORT-FILE',
+						action: 'size_' + data.length});
+				}
+				catch (e)
+				{
+					// ignore
+				}
+
+				done(xml);
+			}
+			else
+			{
+				handleError(null);
+			}
+		}), handleError);
+	};
+
 	/**
 	 * Export the diagram to VSDX
 	 */
@@ -10281,62 +12082,58 @@
 	};
 
 	/**
-	 * Generates a Mermaid image.
+	 * Re-parses a Mermaid group's source and replaces its children with the
+	 * result. The fresh parse is run through `mxMermaidToDrawio.wrapGroup` (the
+	 * same normalization used on insert), and the resulting wrapper's children
+	 * and size are adopted into `cell` so the edit keeps the same padding and
+	 * geometry as the initial insert. The cell is resized to contain all
+	 * children (preserving top-left) and its mermaidData is updated.
+	 *
+	 * If the parser stamped `mermaidId` / `mermaidBaseStyle` / `mermaidBaseValue`
+	 * on its cells (drawio-mermaid does so for every diagram type via
+	 * `tagMermaidIdentity`), user customizations to per-child style and label
+	 * are preserved across the regeneration. See `mergeMermaidStyleDelta` for
+	 * the merge semantics.
 	 */
-	EditorUi.prototype.createMermaidXml = function(mermaidData, config, imageData, w, h, prompt)
+	EditorUi.prototype.replaceLockedGroupChildren = function(cell, xml, text, config, converter)
 	{
-		var graph = new Graph(document.createElement('div'));
-		var cell = graph.insertVertex(null, null, null, 0, 0, w, h,
-			'shape=image;noLabel=1;verticalAlign=top;' +
-			'imageAspect=1;image=' + imageData + ';')
-		graph.setAttributeForCell(cell, 'mermaidData', JSON.stringify(
-			{data: mermaidData, config: config}, null, 2));
-
-		if (prompt != null)
-		{
-			graph.setAttributeForCell(cell, 'templatePrompt', prompt);
-		}
-
-		var codec = new mxCodec();
-		var node = codec.encode(graph.getModel());
-
-		return mxUtils.getXml(node);
-	};
-
-	/**
-	 * Replaces the children of a locked-group Mermaid cell with the result of
-	 * a fresh parse. The parsed XML is expected to carry a single wrapper
-	 * vertex; its children become the new children of `cell`. The cell is
-	 * resized to the new content bounds (preserving top-left) and the
-	 * mermaidData attribute is updated to match the new source.
-	 */
-	EditorUi.prototype.replaceLockedGroupChildren = function(cell, xml, text, config)
-	{
+		// `converter` selects the source-diagram integration: wrapGroup
+		// normalizer, the data attribute on the wrapper and the identity
+		// attribute prefix. Defaults to the Mermaid integration.
+		var wrapFn = (converter != null && converter.wrapGroup != null) ?
+			converter.wrapGroup : mxMermaidToDrawio.wrapGroup;
+		var dataAttr = (converter != null && converter.dataAttr != null) ?
+			converter.dataAttr : 'mermaidData';
+		var attrPrefix = (converter != null && converter.attrPrefix != null) ?
+			converter.attrPrefix : 'mermaid';
 		var graph = this.editor.graph;
-		var doc = mxUtils.parseXml(xml);
+		var doc = mxUtils.parseXml(wrapFn(xml, text, config));
 		var codec = new mxCodec(doc);
 		var tempModel = new mxGraphModel();
 		codec.decode(doc.documentElement, tempModel);
 
-		// Locate wrapper: first vertex under a layer that has children.
+		// wrapGroup leaves a single wrapper under the layer carrying
+		// mermaidData; its children are the new content (already shifted by
+		// the standard padding for flat charts, or laid out natively for
+		// parser-wrapped charts).
 		var tempRoot = tempModel.getRoot();
 		var wrapper = null;
 
-		if (tempRoot != null)
+		for (var i = 0; tempRoot != null && i < tempModel.getChildCount(tempRoot) &&
+			wrapper == null; i++)
 		{
-			for (var i = 0; i < tempModel.getChildCount(tempRoot) && wrapper == null; i++)
+			var layer = tempModel.getChildAt(tempRoot, i);
+
+			for (var j = 0; j < tempModel.getChildCount(layer); j++)
 			{
-				var layer = tempModel.getChildAt(tempRoot, i);
+				var c = tempModel.getChildAt(layer, j);
+				var v = c.value;
 
-				for (var j = 0; j < tempModel.getChildCount(layer); j++)
+				if (v != null && typeof v === 'object' && v.getAttribute != null &&
+					v.getAttribute(dataAttr) != null)
 				{
-					var c = tempModel.getChildAt(layer, j);
-
-					if (tempModel.isVertex(c) && tempModel.getChildCount(c) > 0)
-					{
-						wrapper = c;
-						break;
-					}
+					wrapper = c;
+					break;
 				}
 			}
 		}
@@ -10346,41 +12143,133 @@
 			return;
 		}
 
-		// Collect wrapper's children and compute content bounds.
-		var tempChildren = [];
-		var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+		var newChildren = [];
 
 		for (var i = 0; i < tempModel.getChildCount(wrapper); i++)
 		{
-			var c = tempModel.getChildAt(wrapper, i);
-			tempChildren.push(c);
+			newChildren.push(tempModel.getChildAt(wrapper, i));
+		}
 
-			if (tempModel.isVertex(c))
+		// A childless wrapper (e.g. the legacy image fallback) is itself the
+		// content — adopt it as the single child rather than no-op.
+		if (newChildren.length == 0)
+		{
+			newChildren = [wrapper];
+		}
+
+		var wrapperGeo = tempModel.getGeometry(wrapper);
+
+		// Anchor the new content at the old content's top-left. With
+		// transparentBounds the wrapper stays pinned at (0,0,0,0) and the
+		// diagram's position is carried by the children's coords, so without
+		// this shift a re-parse would jump the content back to the parser's
+		// native origin. For protected charts (wrapper at native coords) the
+		// shift is normally zero or small and harmless.
+		var oldMinX = Infinity, oldMinY = Infinity;
+		var oldCount = graph.model.getChildCount(cell);
+
+		for (var i = 0; i < oldCount; i++)
+		{
+			var oc = graph.model.getChildAt(cell, i);
+
+			if (graph.model.isVertex(oc))
 			{
-				var g = c.getGeometry();
+				var og = oc.getGeometry();
 
-				if (g != null)
+				if (og != null)
 				{
-					minX = Math.min(minX, g.x);
-					minY = Math.min(minY, g.y);
-					maxX = Math.max(maxX, g.x + g.width);
-					maxY = Math.max(maxY, g.y + g.height);
+					oldMinX = Math.min(oldMinX, og.x);
+					oldMinY = Math.min(oldMinY, og.y);
 				}
 			}
 		}
 
-		if (tempChildren.length == 0)
+		var newMinX = Infinity, newMinY = Infinity;
+
+		for (var i = 0; i < newChildren.length; i++)
 		{
-			return;
+			if (tempModel.isVertex(newChildren[i]))
+			{
+				var ng = newChildren[i].getGeometry();
+
+				if (ng != null)
+				{
+					newMinX = Math.min(newMinX, ng.x);
+					newMinY = Math.min(newMinY, ng.y);
+				}
+			}
 		}
 
-		// Clone for the live graph (fresh IDs, edges remapped to clones).
-		var liveChildren = graph.cloneCells(tempChildren, true);
+		var shiftX = (isFinite(oldMinX) && isFinite(newMinX)) ? oldMinX - newMinX : 0;
+		var shiftY = (isFinite(oldMinY) && isFinite(newMinY)) ? oldMinY - newMinY : 0;
+
+		if (shiftX != 0 || shiftY != 0)
+		{
+			for (var i = 0; i < newChildren.length; i++)
+			{
+				var nc = newChildren[i];
+				var ng = nc.getGeometry();
+
+				if (ng == null)
+				{
+					continue;
+				}
+
+				ng = ng.clone();
+
+				if (tempModel.isVertex(nc))
+				{
+					ng.x += shiftX;
+					ng.y += shiftY;
+				}
+				else if (tempModel.isEdge(nc))
+				{
+					if (ng.points != null)
+					{
+						for (var k = 0; k < ng.points.length; k++)
+						{
+							if (ng.points[k] != null)
+							{
+								ng.points[k].x += shiftX;
+								ng.points[k].y += shiftY;
+							}
+						}
+					}
+
+					if (ng.sourcePoint != null)
+					{
+						ng.sourcePoint.x += shiftX;
+						ng.sourcePoint.y += shiftY;
+					}
+
+					if (ng.targetPoint != null)
+					{
+						ng.targetPoint.x += shiftX;
+						ng.targetPoint.y += shiftY;
+					}
+				}
+
+				tempModel.setGeometry(nc, ng);
+			}
+		}
+
+		// Snapshot the user state of every existing child keyed by its
+		// mermaidId BEFORE removal, so the merge below has access to
+		// (currentStyle, currentLabel, baseStyle, baseValue) for each
+		// previously-tagged cell. Cells without a mermaidId (other diagram
+		// types, or pre-tagging files) skip the merge silently.
+		var oldByMermaidId = this.snapshotMermaidIdentity(cell, attrPrefix);
+
+		// Clone for the live graph (fresh IDs, edges remapped to clones). The
+		// children already carry the correct group-relative geometry from
+		// wrapGroup + the anchor shift above, so adding them needs no further
+		// translation.
+		var liveChildren = graph.cloneCells(newChildren, true);
 
 		graph.getModel().beginUpdate();
 		try
 		{
-			// Remove existing children of the locked group.
+			// Remove existing children of the group.
 			var childCount = graph.model.getChildCount(cell);
 
 			for (var j = childCount - 1; j >= 0; j--)
@@ -10388,40 +12277,30 @@
 				graph.model.remove(graph.model.getChildAt(cell, j));
 			}
 
-			// Shift child geometries so the content origin sits at (0, 0)
-			// inside the group, then add them.
-			var dx = isFinite(minX) ? minX : 0;
-			var dy = isFinite(minY) ? minY : 0;
-
 			for (var i = 0; i < liveChildren.length; i++)
 			{
-				var lc = liveChildren[i];
-
-				if (graph.model.isVertex(lc) && lc.geometry != null)
-				{
-					lc.geometry = lc.geometry.clone();
-					lc.geometry.x -= dx;
-					lc.geometry.y -= dy;
-				}
-
-				graph.model.add(cell, lc);
+				// Reapply user style/label customizations from the previous
+				// regeneration onto this fresh parser output (no-op when
+				// the cell has no mermaidId or no matching old entry).
+				this.applyMermaidUserCustomizations(liveChildren[i], oldByMermaidId, attrPrefix);
+				graph.model.add(cell, liveChildren[i]);
 			}
 
-			// Resize the group to the new content bounds, preserving top-left.
-			if (isFinite(maxX - minX) && isFinite(maxY - minY))
+			// Resize the group to contain the new children, preserving top-left.
+			if (wrapperGeo != null)
 			{
 				var geo = graph.model.getGeometry(cell);
 
 				if (geo != null)
 				{
 					geo = geo.clone();
-					geo.width = maxX - minX;
-					geo.height = maxY - minY;
+					geo.width = wrapperGeo.width;
+					geo.height = wrapperGeo.height;
 					graph.model.setGeometry(cell, geo);
 				}
 			}
 
-			graph.setAttributeForCell(cell, 'mermaidData',
+			graph.setAttributeForCell(cell, dataAttr,
 				JSON.stringify({data: text, config: config}, null, 2));
 		}
 		finally
@@ -10431,9 +12310,243 @@
 	};
 
 	/**
-	 * Generates a Mermaid image.
+	 * Walks the children of `groupCell` and indexes them by `mermaidId`,
+	 * capturing each cell's current style + label and the parser's previous
+	 * baseline (mermaidBaseStyle / mermaidBaseValue). Used by
+	 * `replaceLockedGroupChildren` to compute user customization deltas
+	 * before discarding the old cells.
 	 */
-	EditorUi.prototype.getSvgForXml = function(xml)
+	EditorUi.prototype.snapshotMermaidIdentity = function(groupCell, attrPrefix)
+	{
+		var prefix = (attrPrefix != null) ? attrPrefix : 'mermaid';
+		var graph = this.editor.graph;
+		var byId = {};
+		var n = graph.model.getChildCount(groupCell);
+
+		for (var i = 0; i < n; i++)
+		{
+			var oc = graph.model.getChildAt(groupCell, i);
+			var ov = oc.value;
+
+			if (ov == null || typeof ov !== 'object' || ov.getAttribute == null)
+			{
+				continue;
+			}
+
+			var mid = ov.getAttribute(prefix + 'Id');
+
+			if (!mid) continue;
+
+			byId[mid] = {
+				currentStyle: oc.style || '',
+				currentLabel: ov.getAttribute('label') || '',
+				baseStyle: ov.getAttribute(prefix + 'BaseStyle') || '',
+				baseValue: ov.getAttribute(prefix + 'BaseValue') || ''
+			};
+		}
+
+		return byId;
+	};
+
+	/**
+	 * Reapplies the user's previous style + label customizations onto a
+	 * freshly-parsed cell `lc`, looked up by its `mermaidId` in the map
+	 * `oldByMermaidId` produced by `snapshotMermaidIdentity`. No-op when
+	 * the cell isn't tagged or no prior version exists with the same id.
+	 *
+	 * Only the cell's `value` (UserObject + label) and `style` are mutated;
+	 * geometry comes from the new layout (the regeneration's whole point).
+	 */
+	EditorUi.prototype.applyMermaidUserCustomizations = function(lc, oldByMermaidId, attrPrefix)
+	{
+		var prefix = (attrPrefix != null) ? attrPrefix : 'mermaid';
+		var nv = lc.value;
+
+		if (nv == null || typeof nv !== 'object' || nv.getAttribute == null)
+		{
+			return;
+		}
+
+		var mid = nv.getAttribute(prefix + 'Id');
+
+		if (!mid) return;
+
+		var old = oldByMermaidId[mid];
+
+		if (old == null) return;
+
+		// Style: take fresh parser output, then re-apply the user's delta
+		// (whatever diverges from the previous-round baseline).
+		lc.style = this.mergeMermaidStyleDelta(
+			old.baseStyle, old.currentStyle, lc.style || '', lc.isEdge());
+
+		// Label: if the user diverged from the previous-round baseline,
+		// keep their override. Otherwise let the new parser label stand.
+		if (old.currentLabel !== old.baseValue)
+		{
+			nv.setAttribute('label', old.currentLabel);
+		}
+	};
+
+	/**
+	 * Re-applies a user's style customizations on top of a fresh parser
+	 * output. The three inputs:
+	 *
+	 *   baseStyle    — what the parser emitted on the PREVIOUS regeneration
+	 *                  (stamped on the cell as `mermaidBaseStyle` then)
+	 *   currentStyle — what the cell looks like NOW: baseStyle + user edits
+	 *   newStyle     — what the parser is emitting THIS regeneration
+	 *
+	 * Approach: parse each into an ordered key/value list, then start from
+	 * `newStyle` and apply the user delta:
+	 *
+	 *   added/changed: any key in `currentStyle` whose value differs from
+	 *                  `baseStyle` is treated as a user customization and
+	 *                  overwrites whatever `newStyle` has for that key.
+	 *   removed:       any key present in `baseStyle` but absent from
+	 *                  `currentStyle` is treated as a user-removed key and
+	 *                  is dropped from the result even if `newStyle` has it.
+	 *
+	 * Source-driven style changes (parser emits new key for everyone,
+	 * baseStyle didn't have it) propagate freely: they're in `newStyle`
+	 * but neither in baseStyle nor in currentStyle's delta, so they
+	 * pass through unchanged.
+	 *
+	 * For edges (`isEdge`), connector-end keys are owned by the diagram
+	 * source rather than the user — see `sourceManaged` below.
+	 *
+	 * Output preserves the order of `newStyle`'s keys, with user-added
+	 * keys appended in `currentStyle` order.
+	 */
+	EditorUi.prototype.mergeMermaidStyleDelta = function(baseStyle, currentStyle, newStyle, isEdge)
+	{
+		function parseStyle(s)
+		{
+			var map = {};
+			var keys = [];
+
+			if (!s) return { map: map, keys: keys };
+
+			var parts = s.split(';');
+
+			for (var i = 0; i < parts.length; i++)
+			{
+				var p = parts[i];
+
+				if (!p) continue;
+
+				var eq = p.indexOf('=');
+
+				if (eq > 0)
+				{
+					var k = p.substring(0, eq);
+
+					if (!(k in map)) keys.push(k);
+					map[k] = p.substring(eq + 1);
+				}
+				else
+				{
+					// Naked tokens (shape names like 'rounded', 'rhombus')
+					// — preserved as key-only entries with value === true.
+					if (!(p in map)) keys.push(p);
+					map[p] = true;
+				}
+			}
+
+			return { map: map, keys: keys };
+		}
+
+		var base = parseStyle(baseStyle);
+		var cur = parseStyle(currentStyle);
+		var fresh = parseStyle(newStyle);
+
+		// Edge routing / connection-point keys are owned by whatever layout is
+		// active, not by the user. Running an Arrange > Layout (or the mermaid
+		// re-parse's own ELK pass) rewrites exitX/Y + entryX/Y and the
+		// orthogonal-routing flags on every edge, so currentStyle diverges from
+		// baseStyle there even when the user changed nothing. Treating that as a
+		// user delta would stamp the PREVIOUS layout's attach sides (e.g. a
+		// horizontal flow's exitX=1 / entryX=0) back onto the freshly re-laid-out
+		// edges, leaving connection points that fight the new waypoints. Always
+		// take these from the fresh parser/layout output (newStyle).
+		var layoutManaged = {
+			exitX: 1, exitY: 1, exitDx: 1, exitDy: 1,
+			entryX: 1, entryY: 1, entryDx: 1, entryDy: 1,
+			edgeStyle: 1, noEdgeStyle: 1, orthogonal: 1
+		};
+
+		// An edge's connector ends are owned by the diagram source, not the
+		// user: the link operator (`-->`, `<-->`, `--o`, ...) defines the
+		// arrows, so a manually added/changed/removed arrow head is reverted
+		// on re-parse and the fresh output's ends always win. Gated on edges
+		// because startSize/endSize mean something else on vertices (swimlane
+		// title size), where user changes must survive.
+		var sourceManaged = isEdge ? {
+			startArrow: 1, endArrow: 1, startFill: 1, endFill: 1,
+			startSize: 1, endSize: 1
+		} : {};
+
+		var resultMap = {};
+		var resultKeys = [];
+
+		// Start from the fresh parser output.
+		for (var i = 0; i < fresh.keys.length; i++)
+		{
+			var k = fresh.keys[i];
+			resultMap[k] = fresh.map[k];
+			resultKeys.push(k);
+		}
+
+		// User-added or user-changed keys (cur diverges from base).
+		for (var i = 0; i < cur.keys.length; i++)
+		{
+			var k = cur.keys[i];
+
+			if (layoutManaged[k] || sourceManaged[k]) continue;
+
+			if (cur.map[k] !== base.map[k])
+			{
+				if (!(k in resultMap)) resultKeys.push(k);
+				resultMap[k] = cur.map[k];
+			}
+		}
+
+		// User-removed keys (in base but not in cur).
+		for (var i = 0; i < base.keys.length; i++)
+		{
+			var k = base.keys[i];
+
+			if (layoutManaged[k] || sourceManaged[k]) continue;
+
+			if (!(k in cur.map))
+			{
+				delete resultMap[k];
+			}
+		}
+
+		var out = [];
+
+		for (var i = 0; i < resultKeys.length; i++)
+		{
+			var k = resultKeys[i];
+			var v = resultMap[k];
+
+			if (v === undefined) continue;
+			if (v === true) out.push(k);
+			else out.push(k + '=' + v);
+		}
+
+		return out.length > 0 ? out.join(';') + ';' : '';
+	};
+
+	/**
+	 * Renders the given diagram XML to an SVG element via a temporary graph.
+	 * An optional border (px, at scale 1) adds uniform padding around the
+	 * content — used by the Mermaid image path to match the small padding the
+	 * legacy upstream-rendered images had. The optional theme is passed to
+	 * getSvg, which writes the resolved color-scheme onto the SVG root.
+	 */
+	EditorUi.prototype.getSvgForXml = function(xml, border, theme)
 	{
 		var result = null;
 		var graph = this.createTemporaryGraph(this.editor.graph.getStylesheet());
@@ -10443,21 +12556,64 @@
 			document.body.appendChild(graph.container);
 			var codec = new mxCodec(mxUtils.parseXml(xml));
 			codec.decode(mxUtils.parseXml(xml).documentElement, graph.getModel());
-			result = graph.getSvg(null, null, null, null, null, null, null,
-				null, null, null, null, null, null, null, true, true);
+			result = graph.getSvg(null, null, border, null, null, null, null,
+				null, null, null, null, theme, null, null, true, true);
 		}
 		finally
 		{
 			document.body.removeChild(graph.container);
 		}
-		
+
 		return result;
 	};
 
 	/**
-	 * Generates a Mermaid image.
+	 * Shows the given diagram XML in the zoomable sidebar preview tooltip
+	 * (as used for generated diagrams in ChatWindow), anchored at the given
+	 * event's pointer position. Content larger than the viewport is scaled
+	 * down to fit and gets zoom controls. Used by the Mermaid and PlantUML
+	 * insert/edit dialogs to preview the parse result without inserting it.
 	 */
-	EditorUi.prototype.generateOpenAiMermaidDiagram = function(prompt, success, error, enableParser, options)
+	EditorUi.prototype.showPreviewTooltip = function(xml, evt)
+	{
+		if (this.sidebar != null)
+		{
+			var cells = this.stringToCells(xml);
+
+			if (cells.length > 0)
+			{
+				var ww = window.innerWidth || document.documentElement.clientWidth ||
+					document.body.clientWidth;
+				var wh = window.innerHeight || document.documentElement.clientHeight ||
+					document.body.clientHeight;
+
+				this.sidebar.createTooltip(mxEvent.getSource(evt), cells,
+					Math.min(ww - 120, 1600), Math.min(wh - 120, 1200), null,
+					true, new mxPoint(mxEvent.getClientX(evt),
+					mxEvent.getClientY(evt)), true, null, true, false);
+
+				// The document's pointer handlers hide the closable tooltip on
+				// any pointer event outside of it; Escape and Ctrl+Enter close
+				// the hosting dialog without such an event, so the preview is
+				// also hidden whenever a dialog closes.
+				if (this.previewTooltipDialogListener == null)
+				{
+					this.previewTooltipDialogListener = mxUtils.bind(this, function()
+					{
+						this.sidebar.hideTooltip();
+					});
+
+					this.editor.addListener('hideDialog',
+						this.previewTooltipDialogListener);
+				}
+			}
+		}
+	};
+
+	/**
+	 * Generates a diagram for the given prompt and returns diagram XML.
+	 */
+	EditorUi.prototype.generateOpenAiMermaidDiagram = function(prompt, success, error, options)
 	{
 		var maxRetries = 3;
 		var retryCount = 0;
@@ -10488,8 +12644,7 @@
 				};
 				var url = 'https://www.draw.io/generate/v3';
 				EditorUi.debug('EditorUi.generateOpenAiMermaidDiagram',
-					[this], 'enableParser', enableParser,
-					'data', [data], 'url', [url]);
+					[this], 'data', [data], 'url', [url]);
 				var t0 = Date.now();
 				var req = new mxXmlRequest(url, JSON.stringify(data), 'POST');
 				
@@ -10544,39 +12699,70 @@
 									[this], 'data', [data], 'response', [response],
 									'time', (Date.now() - t0) + ' ms');
 								
-								if (enableParser)
+								// Prefer an <mxGraphModel> found anywhere in the
+								// response. extractGraphModelFromText tolerates a
+								// leading newline/BOM, a markdown ```xml fence or a
+								// prose preamble around the XML — all of which defeat
+								// a bare charAt(0)=='<' check and misroute valid
+								// draw.io XML into the mermaid parser (surfacing as a
+								// bogus "Unsupported diagram type: <mxfile").
+								var parsed = Editor.extractGraphModelFromText(result);
+								var partial = false;
+
+								// A response cut off mid-model (eg. by an output
+								// limit) has no closing tag so nothing was extracted:
+								// repair the truncation and re-extract so the complete
+								// prefix of the diagram still renders, flagged as
+								// partial for the caller
+								if ((parsed == null || parsed[1] == '') &&
+									result.indexOf('<mxGraphModel') >= 0)
 								{
-									if (result.charAt(0) == '<')
+									var repaired = Editor.repairTruncatedXml(result);
+
+									if (repaired != null)
 									{
-										if (timeout.clear())
-										{
-											var parsed = Editor.extractGraphModelFromText(result);
-											success((parsed != null && parsed.length == 3) ? parsed[1] : result);
-										}
+										parsed = Editor.extractGraphModelFromText(repaired);
+										partial = parsed[1] != '';
 									}
-									else
+								}
+
+								if (parsed != null && parsed[1] != '')
+								{
+									if (timeout.clear())
 									{
-										this.parseMermaidDiagram(result, null, mxUtils.bind(this, function(xml)
-										{
-											this.tryAndHandle(mxUtils.bind(this, function()
-											{
-												if (timeout.clear())
-												{
-													success(xml);
-												}
-											}), handleError);
-										}), handleError, retry, true);
+										success(parsed[1], partial);
+									}
+								}
+								else if (mxUtils.trim(result).charAt(0) == '<')
+								{
+									// XML-ish but no extractable <mxGraphModel> (e.g.
+									// a compressed <mxfile>): still treat it as draw.io
+									// XML, not mermaid, so it never hits the parser.
+									if (timeout.clear())
+									{
+										success(result);
 									}
 								}
 								else
 								{
-									this.generateMermaidImage(result, null, mxUtils.bind(this, function(data, w, h)
+									// Route through the shared mermaid classifier (strips a
+									// markdown fence and validates the type via the parser),
+									// matching the custom-endpoint chat path. Falls back to the
+									// raw result so a non-mermaid response still produces a
+									// proper "Unsupported diagram type" error rather than being
+									// misparsed (e.g. a ```mermaid fence reaching the parser).
+									var mermaid = this.extractMermaidDeclaration(result) || result;
+
+									this.parseMermaidDiagram(mermaid, null, mxUtils.bind(this, function(xml)
 									{
 										this.tryAndHandle(mxUtils.bind(this, function()
 										{
 											if (timeout.clear())
 											{
-												success(result, data, w, h);
+												// Wrap in an editable mermaid group (carries the
+												// source for double-click edit), as the insert dialog does
+												success(mxMermaidToDrawio.wrapGroup(
+													xml, mermaid, EditorUi.getInsertMermaidConfig()));
 											}
 										}), handleError);
 									}), handleError, retry);
@@ -10663,78 +12849,60 @@
 		lines = lines2;
 		text = mxUtils.trim(lines.join('\n'));
 
-		// Removes occasional mermaid tag or other text on first line
-		var type = (lines.length > 1) ? lines[0] : null;
-
-		if (type != null)
-		{
-			var dash = type.indexOf('-');
-
-			if (dash > 0)
-			{
-				type = type.substring(0, dash);
-			}
-		}
-
-		// Validates diagram type on first line
-		type = lines[0].split(' ')[0].replace(/:$/, '');
-		var dash = type.indexOf('-');
-
-		if (dash > 0)
-		{
-			type = type.substring(0, dash);
-		}
+		// Validates that the cleaned text is Mermaid by asking the parser's own
+		// type detection (MermaidParser, published by the Mermaid bundle and the
+		// single source of truth for recognized types). A null result means the
+		// first token isn't a Mermaid keyword, so the input was XML or prose and
+		// we return null. When the parser isn't loaded we can't classify, so we
+		// also treat the input as non-Mermaid.
+		var typeInfo = (typeof MermaidParser !== 'undefined') ?
+			MermaidParser.detectType(text) : null;
 
 		EditorUi.debug('EditorUi.extractMermaidDeclaration',
-			'value', [value], 'text', [text], 'type', [type],
+			'value', [value], 'text', [text], 'typeInfo', [typeInfo],
 			'startLine', startLine, 'lines', lines,
 			'tokens', tokens);
-		
-		// TODO Is this too restrictive?
-		if (mxUtils.indexOf(EditorUi.mermaidDiagramTypes, type) < 0)
-		{
-			text = null;
-		}
-	
-		return text;
+
+		return (typeInfo != null) ? text : null;
 	};
 
 	/**
-	 * Returns true if the given Mermaid diagram type is supported by the parser.
-	 */
-	EditorUi.prototype.isSupportedMermaidDiagramType = function(diagramType)
-	{
-		return diagramType == 'graph' || diagramType == 'flowchart' ||
-			diagramType == 'sequencediagram' || diagramType == 'classdiagram' ||
-			diagramType == 'statediagram-v2' || diagramType == 'statediagram' ||
-			diagramType == 'erdiagram' || diagramType == 'requirementdiagram' ||
-			diagramType == 'gitgraph' || diagramType == 'mindmap' ||
-			diagramType == 'journey';
-	};
-
-	/**
-	 * Extracts the Mermaid diagram type from the given data.
+	 * Extracts the Mermaid diagram type from the given data. Returns the
+	 * empty string when there is no type line (empty/comment-only input or
+	 * an unclosed frontmatter block) — this is called while building parse
+	 * error messages, so it must never throw on degenerate input.
 	 */
 	EditorUi.prototype.getMermaidDiagramType = function(data)
 	{
-		var lines = data.split('\n');
+		var lines = (data != null) ? data.split('\n') : [];
 		var k = 0;
 
-		while (k < lines.length && (lines[k].trim().length == 0 ||
-			lines[k].substring(0, 2) == '%%'))
+		var skipBlankAndComments = function()
 		{
-			k++;
-		}
+			while (k < lines.length && (lines[k].trim().length == 0 ||
+				lines[k].substring(0, 2) == '%%'))
+			{
+				k++;
+			}
+		};
 
-		if (lines[k].trim() == '---')
+		skipBlankAndComments();
+
+		if (k < lines.length && lines[k].trim() == '---')
 		{
 			do
 			{
 				k++;
 			}
 			while (k < lines.length && lines[k].trim() != '---');
-			
+
 			k++;
+			skipBlankAndComments();
+		}
+
+		if (k >= lines.length)
+		{
+			return '';
 		}
 
 		var diagramType = lines[k].trim().toLowerCase();
@@ -10745,33 +12913,200 @@
 	};
 
 	/**
-	 * Parses the given mermaid diagram and returns diagram XML.
+	 * Returns true when a mermaid source selects the `elk` layout for a
+	 * flowchart. Two equivalent forms are recognized:
+	 *   - the legacy init directive
+	 *     `%%{init: {flowchart: {defaultRenderer: "elk"}}}%%`, and
+	 *   - the YAML-frontmatter config key `config: { layout: elk }`
+	 *     (the form Mermaid recommends since v10.5.0, which deprecated
+	 *     directives) — this is what drawio-mcp now round-trips.
+	 * Both must produce identical geometry, so both route through the same
+	 * post-parse {@link ElkLayout} pass: mermaid's elk renderer differs
+	 * structurally from drawio native ELK output, and running our layered
+	 * preset on the parsed XML produces a layout that matches the
+	 * mermaid-cli reference.
 	 */
-	EditorUi.prototype.parseMermaidDiagram = function(data, config, success, error, parseErrorHandler, enableParser)
+	EditorUi.prototype.isMermaidElkFlowchart = function(data)
 	{
-		var returned = false;
-		
-		if (enableParser && typeof mxMermaidToDrawio !== 'undefined' &&
-			this.isSupportedMermaidDiagramType(this.getMermaidDiagramType(data)))
+		return data != null &&
+			(/defaultRenderer["']?\s*:\s*["']?elk/i.test(data) ||
+				/(?:^|\n)\s*layout\s*:\s*["']?elk\b/i.test(data)) &&
+			/(?:flowchart|graph)\b/i.test(data);
+	};
+
+	/**
+	 * Re-runs drawio's layered ElkLayout on parsed mermaid XML so
+	 * flowchart-elk diagrams open with the menu's "Layout → Horizontal
+	 * Flow" geometry already applied. Decodes the XML into a hidden
+	 * offscreen Graph, runs the layout, encodes back. Falls back to the
+	 * unlaid-out XML on any error; success is invoked exactly once and
+	 * its exceptions propagate to the caller.
+	 */
+	EditorUi.prototype.applyMermaidElkPostPass = function(xml, data, success)
+	{
+		if (typeof ElkLayout === 'undefined' || typeof Graph === 'undefined')
 		{
-			mxMermaidToDrawio.addListener(mxUtils.bind(this, function(xml)
-			{
-				if (!returned && xml != this.emptyDiagramXml)
-				{
-					returned = true;
-					success(xml);
-				}
-			}));
+			success(xml);
+			return;
 		}
 
-		this.generateMermaidImage(data, config, mxUtils.bind(this, function(imageData, w, h)
+		var dirMatch = data.match(
+			/(?:flowchart|graph)\s+(LR|RL|TB|TD|BT)/i);
+		var dirMap = { LR: 'RIGHT', RL: 'LEFT',
+			TB: 'DOWN', TD: 'DOWN', BT: 'UP' };
+		var direction = dirMatch
+			? (dirMap[dirMatch[1].toUpperCase()] || 'DOWN')
+			: 'DOWN';
+
+		var container = document.createElement('div');
+		container.style.cssText =
+			'position:absolute;left:-99999px;top:-99999px;' +
+			'width:1200px;height:800px;visibility:hidden;';
+		document.body.appendChild(container);
+
+		var graph = null;
+		var done = false;
+
+		// Tears down the offscreen graph and delivers the result exactly
+		// once. success runs outside the try blocks below so an exception
+		// thrown by the caller's callback propagates instead of re-entering
+		// the fallback path with a second result.
+		var finish = function(result)
 		{
-			if (!returned)
+			if (!done)
 			{
-				returned = true;
-				success(this.createMermaidXml(data, config, imageData, w, h));
+				done = true;
+
+				try
+				{
+					if (graph != null)
+					{
+						graph.destroy();
+					}
+				}
+				catch (e)
+				{
+					// ignore teardown errors
+				}
+
+				container.remove();
+				success(result);
 			}
-		}), error, parseErrorHandler);
+		};
+
+		try
+		{
+			graph = new Graph(container);
+			graph.foldingEnabled = false;
+			graph.setEnabled(false);
+			graph.setHtmlLabels(true);
+
+			var doc = mxUtils.parseXml(xml);
+			var codec = new mxCodec(doc);
+			codec.decode(doc.documentElement, graph.getModel());
+
+			// GREEDY cycle breaking overrides the bridge's DEPTH_FIRST
+			// default for mermaid imports only: mermaid's elk loader runs
+			// ELK's stock GREEDY, and the two strategies reverse different
+			// edges in a cycle (`A -.-> B` / `B -.-> A` renders B-above-A
+			// in mermaid-cli under GREEDY, A-above-B under DFS). Menu-
+			// driven layout runs keep DFS via ElkLayout.DEFAULTS.
+			var layout = new ElkLayout(graph, 'layered',
+				{ 'elk.direction': direction,
+					'elk.layered.cycleBreaking.strategy': 'GREEDY' },
+				Object.assign({ mermaidPolicy: true }, ElkLayout.CANONICAL_EDGE));
+
+			layout.execute(graph.getDefaultParent(), function (err)
+			{
+				var laidOutXml = null;
+
+				if (!err)
+				{
+					try
+					{
+						var enc = new mxCodec();
+						laidOutXml = mxUtils.getXml(
+							enc.encode(graph.getModel()));
+					}
+					catch (e2)
+					{
+						// falls back to the unlaid-out XML below
+					}
+				}
+
+				finish((laidOutXml != null) ? laidOutXml : xml);
+			});
+		}
+		catch (e)
+		{
+			// A done result means this came through success (e.g. a layout
+			// callback invoked synchronously) — not a layout failure
+			if (done)
+			{
+				throw e;
+			}
+
+			finish(xml);
+		}
+	};
+
+	/**
+	 * Parses the given mermaid diagram and returns diagram XML.
+	 */
+	EditorUi.prototype.parseMermaidDiagram = function(data, config, success, error, parseErrorHandler)
+	{
+		var onParseError = mxUtils.bind(this, function(e)
+		{
+			if (parseErrorHandler != null)
+			{
+				parseErrorHandler(e);
+			}
+			else if (error != null)
+			{
+				error(e);
+			}
+			else
+			{
+				this.handleError(e);
+			}
+		});
+
+		if (EditorUi.isMermaidSupported())
+		{
+			try
+			{
+				var xml = mxMermaidToDrawio.parseText(data, this.getMermaidConfig(data, config));
+
+				if (xml != null)
+				{
+					// Flowchart-elk diagrams need an ElkLayout post-pass
+					// to match the mermaid-cli reference (the parser's
+					// own layout is closer to dagre than to mermaid's
+					// elk renderer). Skip when ElkLayout isn't loaded.
+					if (this.isMermaidElkFlowchart(data))
+					{
+						this.applyMermaidElkPostPass(xml, data, success);
+					}
+					else
+					{
+						success(xml);
+					}
+				}
+				else
+				{
+					onParseError(new Error('Unsupported diagram type: ' +
+						this.getMermaidDiagramType(data)));
+				}
+			}
+			catch (e)
+			{
+				onParseError(e);
+			}
+		}
+		else
+		{
+			onParseError(new Error('Mermaid parser not available'));
+		}
 	};
 
 	/**
@@ -10798,14 +13133,22 @@
 			}
 		});
 
-		if (typeof mermaid === 'undefined' && !this.loadingMermaid && !this.isOffline(true))
+		if (typeof mxMermaidToDrawio === 'undefined' && !this.loadingMermaid && !this.isOffline(true))
 		{
 			this.loadingMermaid = true;
-			
-			if (urlParams['dev'] == '1')
+
+			var isDev = (typeof urlParams !== 'undefined' && urlParams['dev'] == '1') ||
+				(window.location.search && window.location.search.indexOf('dev=1') >= 0);
+
+			if (isDev)
 			{
-				mxscript('js/mermaid/mermaid.min.js', onsuccess,
-					null, null, null, onerror);
+				// Dev mode: load drawio-elk.min.js first so that window.ELK is
+				// available before drawio-mermaid.min.js binds to it
+				mxscript('js/elk/drawio-elk.min.js', function()
+				{
+					mxscript('js/mermaid/drawio-mermaid.min.js', onsuccess,
+						null, null, null, onerror);
+				}, null, null, null, onerror);
 			}
 			else
 			{
@@ -10820,89 +13163,138 @@
 	};
 
 	/**
-	 * Gets the width and height for the given SVG image.
+	 * Loads the native PlantUML converter extension (mirrors loadMermaid).
 	 */
-	EditorUi.prototype.mermaidSvgToDataUri = function(svg, success, error, parseError)
-	{
-		try
-		{
-			// Fixes common errors in SVG data
-			svg = svg.replace(/xlink:href/g, 'href').replace(/<br>/g, '<br/>');
-			var doc = mxUtils.parseXml(svg);
-			var svgs = doc.getElementsByTagName('svg');
-
-			if (svgs.length > 0 && svgs[0].getAttribute('aria-roledescription') != 'error')
-			{
-				var w = parseFloat(svgs[0].getAttribute('width'));
-				var h = parseFloat(svgs[0].getAttribute('height'));
-				
-				if (isNaN(w) || isNaN(h))
-				{
-					try
-					{
-						var viewBox = svgs[0].getAttribute('viewBox').split(/\s+/);
-						w = parseFloat(viewBox[2]);
-						h = parseFloat(viewBox[3]);
-					}
-					catch(e)
-					{
-						//Any size such that it shows up
-						w = w || 100;
-						h = h || 100;									
-					}
-				}
-				
-				success(this.convertDataUri(Editor.createSvgDataUri(svg)), w, h);
-			}
-			else
-			{
-				if (parseError != null)
-				{
-					parseError();
-				}
-				else
-				{
-					error({message: mxResources.get('invalidInput')});
-				}
-			}
-		}
-		catch (e)
-		{
-			error(e);
-		}
-	};
-
-	/**
-	 * Generates a Mermaid image.
-	 */
-	EditorUi.prototype.getMermaidConfig = function(data, config)
-	{
-		config = (config != null) ? config : mxUtils.clone(EditorUi.defaultMermaidConfig);
-		config.securityLevel = 'strict';
-		config.startOnLoad = false;
-		config.maxTextSize = 900000;
-
-		// Math labels
-		if (typeof mxMermaidToDrawio !== 'undefined' && config.flowchart && data.indexOf('$$') >= 0)
-		{
-			config.flowchart.htmlLabels = true;
-			mxMermaidToDrawio.htmlLabels = true;
-		}
-
-		if (Editor.isDarkMode())
-		{
-			config.theme = 'dark';
-		}
-		
-		return config;
-	};
-
-	/**
-	 * Generates a Mermaid image.
-	 */
-	EditorUi.prototype.generateMermaidImage = function(data, config, success, error, parseErrorHandler)
+	EditorUi.prototype.loadPlantUml = function(success, error)
 	{
 		var onerror = mxUtils.bind(this, function(e)
+		{
+			this.loadingPlantUml = false;
+			error(e);
+		});
+
+		var onsuccess = mxUtils.bind(this, function()
+		{
+			try
+			{
+				this.loadingPlantUml = false;
+				success();
+			}
+			catch (e)
+			{
+				onerror(e);
+			}
+		});
+
+		// No offline guard, unlike loadMermaid: the bundle is same-origin
+		// (desktop preloads it in bootstrap.js, the PWA precaches it), so
+		// the load is attempted regardless and a failure surfaces via
+		// onerror instead of a misleading "parser not available"
+		if (typeof mxPlantUmlToDrawio === 'undefined' && !this.loadingPlantUml)
+		{
+			this.loadingPlantUml = true;
+
+			var isDev = (typeof urlParams !== 'undefined' && urlParams['dev'] == '1') ||
+				(window.location.search && window.location.search.indexOf('dev=1') >= 0);
+
+			// The PlantUML converter ships as a self-contained vendored
+			// bundle and is NOT part of extensions.min.js — loading that
+			// here re-executed the Bridge.NET orgchart assembly when it
+			// was already present ("Class 'OrgChart.Annotations.
+			// CanBeNullAttribute' is already defined") and still didn't
+			// define mxPlantUmlToDrawio.
+			mxscript((isDev ? '' : window.DRAWIO_SERVER_URL) +
+				'js/plantuml/drawio-plantuml.min.js', onsuccess,
+				null, null, null, onerror);
+		}
+		else
+		{
+			window.setTimeout(onsuccess, 0);
+		}
+	};
+
+	/**
+	 * Loads the native Gliffy converter extension (mirrors loadPlantUml:
+	 * a self-contained bundle defining mxGliffyToDrawio, NOT part of
+	 * extensions.min.js, fetched only when a Gliffy file is imported).
+	 * Unlike loadPlantUml, concurrent callers queue on the in-flight load
+	 * instead of proceeding before the script arrives — a multi-file drop
+	 * converts several Gliffy files back to back.
+	 */
+	EditorUi.prototype.loadGliffy = function(success, error)
+	{
+		if (EditorUi.isNativeGliffySupported())
+		{
+			window.setTimeout(success, 0);
+		}
+		else
+		{
+			if (this.gliffyLoadQueue == null)
+			{
+				this.gliffyLoadQueue = [];
+			}
+
+			this.gliffyLoadQueue.push({success: success, error: error});
+
+			if (!this.loadingGliffy)
+			{
+				this.loadingGliffy = true;
+
+				var isDev = (typeof urlParams !== 'undefined' && urlParams['dev'] == '1') ||
+					(window.location.search && window.location.search.indexOf('dev=1') >= 0);
+
+				var done = mxUtils.bind(this, function(err)
+				{
+					this.loadingGliffy = false;
+					var queue = this.gliffyLoadQueue;
+					this.gliffyLoadQueue = null;
+
+					for (var i = 0; i < queue.length; i++)
+					{
+						try
+						{
+							if (err == null && EditorUi.isNativeGliffySupported())
+							{
+								queue[i].success();
+							}
+							else if (queue[i].error != null)
+							{
+								queue[i].error(err);
+							}
+						}
+						catch (e)
+						{
+							if (queue[i].error != null)
+							{
+								queue[i].error(e);
+							}
+						}
+					}
+				});
+
+				mxscript((isDev ? '' : window.DRAWIO_SERVER_URL) +
+					'js/gliffy/drawio-gliffy.min.js', function()
+					{
+						done(null);
+					}, null, null, null, done);
+			}
+		}
+	};
+
+	/**
+	 * Parses the given PlantUML source with the native converter and returns
+	 * diagram XML via `success`. Loads the converter bundle on demand.
+	 *
+	 * `success` is called as (xml, warnings), where warnings is the converter's
+	 * list of user-facing strings for input it could not use (a dropped line, an
+	 * ignored directive). They are soft: the XML is complete and usable, so
+	 * callers that are user-initiated pass them to showPlantUmlWarnings, and
+	 * background callers ignore them. Always an array, empty for bundles
+	 * predating the warnings channel.
+	 */
+	EditorUi.prototype.parsePlantUmlDiagram = function(data, config, success, error)
+	{
+		var onParseError = mxUtils.bind(this, function(e)
 		{
 			if (error != null)
 			{
@@ -10913,229 +13305,403 @@
 				this.handleError(e);
 			}
 		});
-		
-		this.loadMermaid(mxUtils.bind(this, function()
+
+		this.loadPlantUml(mxUtils.bind(this, function()
 		{
-			try
+			if (EditorUi.isNativePlantUmlSupported())
 			{
-				mermaid.mermaidAPI.initialize(this.getMermaidConfig(data, config));
-
-				mermaid.mermaidAPI.render('geMermaidOutput-' + new Date().getTime(),
-					data).then(mxUtils.bind(this, function(result)
-					{
-						this.mermaidSvgToDataUri(result.svg, success, error, parseErrorHandler);
-					})).catch(mxUtils.bind(this, function(e)
-					{
-						this.removeMermaidErrors();
-
-						// Adds result to error
-						e = new Error(e.toString() + '\n\n' + data);
-
-						// LATER: Move to calling code where listener is registered
-						if (typeof mxMermaidToDrawio !== 'undefined')
-						{
-							mxMermaidToDrawio.resetListeners();
-						}
-
-						if (parseErrorHandler != null)
-						{
-							parseErrorHandler(e);
-						}
-						else
-						{
-							onerror(e);
-						}
-					}));
-			}
-			catch (e)
-			{
-				onerror(e);
-			}
-		}), onerror);
-	};
-	
-	/**
-	 * Removes div in document with an ID that starts with dgeMermaidOutput
-	 */
-	EditorUi.prototype.removeMermaidErrors = function()
-	{
-		var elts = document.querySelectorAll('div[id*="dgeMermaidOutput-"]');
-
-		for (var i = 0; i < elts.length; i++)
-		{
-			if (elts[i].parentNode != null)
-			{
-				elts[i].parentNode.removeChild(elts[i]);
-			}
-		}
-	};
-
-	/**
-	 * Generates a plant UML image. Possible types are svg, png and txt.
-	 */
-	EditorUi.prototype.generatePlantUmlImage = function(data, type, success, error)
-	{	
-		function encode64(data)
-		{
-			r = "";
-			
-			for (i = 0; i < data.length; i += 3)
-			{
-				if (i + 2 == data.length)
+				try
 				{
-					r += append3bytes(data.charCodeAt(i), data.charCodeAt(i + 1), 0);
+					var xml = mxPlantUmlToDrawio.parseText(data, config);
+
+					// Soft diagnostics for lines the converter dropped or
+					// directives it ignored. Read directly after the parse so a
+					// later parse cannot overwrite them, and handed to the
+					// caller rather than shown here: the silent refresh paths
+					// (eg. refreshMermaidImage) must not raise a notice.
+					// Bundles older than the warnings channel have no
+					// lastWarnings, which yields an empty list.
+					success(xml, (typeof mxPlantUmlToDrawio.lastWarnings !== 'undefined' &&
+						mxPlantUmlToDrawio.lastWarnings != null) ?
+						mxPlantUmlToDrawio.lastWarnings.slice() : []);
 				}
-				else if (i + 1 == data.length)
+				catch (e)
 				{
-					r += append3bytes(data.charCodeAt(i), 0, 0);
-				}
-				else
-				{
-					r += append3bytes(data.charCodeAt(i), data.charCodeAt(i + 1),
-						data.charCodeAt(i + 2));
-				}
-			}
-			
-			return r;
-		}
-
-		function append3bytes(b1, b2, b3)
-		{
-			c1 = b1 >> 2;
-			c2 = ((b1 & 0x3) << 4) | (b2 >> 4);
-			c3 = ((b2 & 0xF) << 2) | (b3 >> 6);
-			c4 = b3 & 0x3F;
-			r = "";
-			r += encode6bit(c1 & 0x3F);
-			r += encode6bit(c2 & 0x3F);
-			r += encode6bit(c3 & 0x3F);
-			r += encode6bit(c4 & 0x3F);
-			
-			return r;
-		}
-
-		function encode6bit(b)
-		{
-			if (b < 10)
-			{
-				return String.fromCharCode(48 + b);
-			}
-			
-			b -= 10;
-			
-			if (b < 26)
-			{
-				return String.fromCharCode(65 + b);
-			}
-			
-			b -= 26;
-			
-			if (b < 26)
-			{
-				return String.fromCharCode(97 + b);
-			}
-			
-			b -= 26;
-			
-			if (b == 0)
-			{
-				return '-';
-			}
-			
-			if (b == 1)
-			{
-				return '_';
-			}
-			
-			return '?';
-		}
-
-		// TODO: Remove unescape, use btoa for compatibility with graph.compress
-		function compress(s)
-		{
-			return encode64(Graph.arrayBufferToString(pako.deflateRaw(s)));
-		};
-
-		var plantUmlServerUrl = (type == 'txt') ? PLANT_URL + '/txt/' :
-			((type == 'png') ? PLANT_URL + '/png/' : PLANT_URL + '/svg/');
-		
-		var xhr = new XMLHttpRequest();
-		xhr.open('GET', plantUmlServerUrl + compress(data), true);
-
-		if (type != 'txt')
-		{
-			xhr.responseType = 'blob';
-		}
-
-		xhr.onload = function(e)
-		{
-			if (this.status >= 200 && this.status < 300)
-			{
-				if (type == 'txt')
-				{
-					success(this.response);
-				}
-				else
-				{
-					var reader = new FileReader();
-					reader.readAsDataURL(this.response);
-
-					reader.onloadend = function(e)
-					{
-						var img = new Image();
-
-						img.onload = function()
-						{
-							try
-							{
-								var w = img.width;
-								var h = img.height;
-	
-								// Workaround for 0 image size in IE11
-								if (w == 0 && h == 0)
-								{
-									var data = reader.result;
-									var comma = data.indexOf(',');
-									var svgText = decodeURIComponent(escape(atob(data.substring(comma + 1))));
-									var root = mxUtils.parseXml(svgText);
-									var svgs = root.getElementsByTagName('svg');
-	
-									if (svgs.length > 0)
-									{
-										w = parseFloat(svgs[0].getAttribute('width'));
-										h = parseFloat(svgs[0].getAttribute('height'));
-									}
-								}
-								
-								success(reader.result, w, h);
-							}
-							catch (e)
-							{
-								error(e);
-							}
-						};
-
-						img.src = reader.result;
-					};
-
-					reader.onerror = function(e)
-					{
-						error(e);
-					};
+					onParseError(e);
 				}
 			}
 			else
 			{
-				error(e);
+				onParseError(new Error('PlantUML parser not available'));
 			}
-		};
+		}), onParseError);
+	};
 
-		xhr.onerror = function(e)
+	/**
+	 * Parses the given PlantUML source and returns, via success, the XML for
+	 * a shape=image cell rendering the result (see createMermaidImageXml,
+	 * shared with the Mermaid image path). The image is draw.io's own SVG
+	 * render of the natively parsed cells — no PlantUML server is involved.
+	 * The source is carried on plantUmlData for re-editing; the stored
+	 * config stays null, like the insert path's editable diagram output.
+	 */
+	EditorUi.prototype.parsePlantUmlImage = function(text, success, error)
+	{
+		this.parsePlantUmlDiagram(text, null, mxUtils.bind(this, function(xml, warnings)
 		{
-			error(e);
-		};
+			// The warnings are about the source, not the representation, so
+			// they pass through to the caller unchanged
+			success(this.createMermaidImageXml(text, null, xml, null, null,
+				'plantUmlData'), warnings);
+		}), error);
+	};
 
-		xhr.send();
+	/**
+	 * Maximum number of PlantUML parse warnings listed by showPlantUmlWarnings
+	 * before the rest are summarized.
+	 */
+	EditorUi.prototype.maxPlantUmlWarnings = 10;
+
+	/**
+	 * Shows the given PlantUML parse warnings (see parsePlantUmlDiagram) in the
+	 * non-modal, auto-fading alert. The parse succeeded and the diagram is
+	 * already inserted or previewed, so this only informs: it must never block
+	 * or undo that, which is why it is not routed through handleError/showError.
+	 * No-op for an empty list, and where showAlert is unavailable.
+	 */
+	EditorUi.prototype.showPlantUmlWarnings = function(warnings)
+	{
+		if (warnings != null && warnings.length > 0 && this.showAlert != null)
+		{
+			var shown = warnings.slice(0, this.maxPlantUmlWarnings);
+
+			if (warnings.length > shown.length)
+			{
+				shown.push(mxResources.get('andNMore',
+					[warnings.length - shown.length]));
+			}
+
+			// showAlert writes its argument as HTML and the warnings quote the
+			// user's own source (the dropped line), so they are escaped here.
+			// The alert is styled white-space:pre-wrap, so the newlines break
+			// the lines without any markup of our own.
+			this.showAlert(mxUtils.htmlEntities(mxResources.get('plantUmlWarnings') +
+				'\n' + shown.join('\n')));
+		}
+	};
+
+	/**
+	 * Returns the Mermaid configuration for the given diagram.
+	 */
+	EditorUi.prototype.getMermaidConfig = function(data, config)
+	{
+		config = (config != null) ? config : mxUtils.clone(EditorUi.defaultMermaidConfig);
+		config.securityLevel = 'strict';
+		config.startOnLoad = false;
+		config.maxTextSize = 900000;
+
+		return config;
+	};
+
+	/**
+	 * Renders the given parsed Mermaid XML (the output of parseMermaidDiagram)
+	 * to an SVG image and returns {data, width, height, border}, where data is
+	 * a semicolon-free data URI ready to be stored in a shape=image cell style
+	 * and border is the resolved padding the render used. The upstream Mermaid
+	 * renderer is gone, so the image is draw.io's own SVG
+	 * rendering of the parsed cells (matching what the editable diagram shows).
+	 * The optional border (px) defaults to
+	 * EditorUi.mermaidImageBorder when null/invalid. The 'auto' theme stamps
+	 * color-scheme: light dark on the SVG root so the light-dark() colors in
+	 * the image follow the viewer's theme (SVG-as-image renders light without
+	 * the declaration). Safari does not yet propagate the embedding color
+	 * scheme into SVG images and keeps rendering the light values (see
+	 * web-platform-tests/interop#1058).
+	 */
+	EditorUi.prototype.getMermaidImageForXml = function(parsedXml, border)
+	{
+		border = parseFloat(border);
+		border = isNaN(border) ? EditorUi.mermaidImageBorder : border;
+		var svgRoot = this.getSvgForXml(parsedXml, border, 'auto');
+		var w = parseFloat(svgRoot.getAttribute('width'));
+		var h = parseFloat(svgRoot.getAttribute('height'));
+
+		if (isNaN(w) || isNaN(h))
+		{
+			try
+			{
+				var viewBox = svgRoot.getAttribute('viewBox').split(/\s+/);
+				w = parseFloat(viewBox[2]);
+				h = parseFloat(viewBox[3]);
+			}
+			catch (e)
+			{
+				// Falls through to the defaults below
+			}
+
+			// Any size such that it shows up
+			w = w || 100;
+			h = h || 100;
+		}
+
+		return {
+			data: this.convertDataUri(Editor.createSvgDataUri(mxUtils.getXml(svgRoot))),
+			width: w,
+			height: h,
+			border: border
+		};
+	};
+
+	/**
+	 * Builds the XML for a shape=image cell that renders the given parsed
+	 * Mermaid XML as a static SVG image and carries the Mermaid source on
+	 * mermaidData (so double-click or the editIcon pen handle re-edits it,
+	 * like the editable group wrapper). Mirrors the legacy
+	 * image-based Mermaid insert that was removed with mermaid.min.js. The
+	 * optional border (px) defaults to EditorUi.mermaidImageBorder; the
+	 * resolved value is kept as the groupPadding cell style — the same key
+	 * the editable group wrapper uses, so the margin round-trips across
+	 * image/diagram switches and style edits carry over into re-renders
+	 * (see getMermaidImageBorder; the legacy mermaidData `border` field is
+	 * no longer written). The
+	 * optional dataAttr selects the source attribute for other converters
+	 * (PlantUML passes plantUmlData), like replaceLockedGroupChildren.
+	 */
+	EditorUi.prototype.createMermaidImageXml = function(mermaidData, config, parsedXml, prompt, border, dataAttr)
+	{
+		var img = this.getMermaidImageForXml(parsedXml, border);
+		var graph = new Graph(document.createElement('div'));
+		var cell = graph.insertVertex(null, null, null, 0, 0, img.width, img.height,
+			'shape=image;noLabel=1;verticalAlign=top;imageAspect=1;editIcon=1;' +
+			'groupPadding=' + img.border + ';image=' + img.data + ';');
+		graph.setAttributeForCell(cell, (dataAttr != null) ? dataAttr : 'mermaidData',
+			JSON.stringify({data: mermaidData, config: config}, null, 2));
+
+		if (prompt != null)
+		{
+			graph.setAttributeForCell(cell, 'templatePrompt', prompt);
+		}
+
+		var codec = new mxCodec();
+
+		return mxUtils.getXml(codec.encode(graph.getModel()));
+	};
+
+	/**
+	 * Parses the given Mermaid source and returns, via success, the XML for a
+	 * shape=image cell rendering the result (see createMermaidImageXml). When a
+	 * Mermaid config is set (the `mermaid` config key), new images follow it —
+	 * like editable diagrams — and store the resolved config so the cell is
+	 * self-describing and renders the same across deployments. When none is set,
+	 * new images keep the previous image look: they parse with
+	 * EditorUi.legacyMermaidConfig and store a null config, exactly like legacy
+	 * image cells. The parse gets a throwaway clone (getMermaidConfig stamps the
+	 * security keys on it), so the stored config stays clean.
+	 */
+	EditorUi.prototype.parseMermaidImage = function(text, success, error)
+	{
+		var configured = EditorUi.isMermaidConfigured();
+		var parseConfig = mxUtils.clone(configured ?
+			EditorUi.defaultMermaidConfig : EditorUi.legacyMermaidConfig);
+		var storeConfig = configured ? parseConfig : null;
+
+		this.parseMermaidDiagram(text, mxUtils.clone(parseConfig),
+			mxUtils.bind(this, function(xml)
+		{
+			success(this.createMermaidImageXml(text, storeConfig, xml));
+		}), error);
+	};
+
+	/**
+	 * Returns the image border for re-rendering the given Mermaid/PlantUML
+	 * cell: the groupPadding cell style when present — the same key the
+	 * editable group wrapper uses, so the margin matches across
+	 * image/diagram switches and style edits carry over — else the stored
+	 * data border (legacy image cells, which carried it in
+	 * mermaidData/plantUmlData), else null for the
+	 * EditorUi.mermaidImageBorder default.
+	 */
+	EditorUi.prototype.getMermaidImageBorder = function(cell, storedBorder)
+	{
+		// ignoreState: resolves from the model, not the cached view state —
+		// the padding-change refresh runs from BEFORE_UNDO, before the edit
+		// is dispatched, where the state style still has the old value
+		// (reading it re-stamped the old padding and fought the change).
+		var pad = parseFloat(mxUtils.getValue(this.editor.graph
+			.getCurrentCellStyle(cell, true), 'groupPadding', ''));
+
+		return (!isNaN(pad)) ? pad : storedBorder;
+	};
+
+	/**
+	 * Re-renders a shape=image Mermaid cell from freshly-parsed Mermaid XML,
+	 * keeping it an image (style, size and mermaidData are updated in place).
+	 * Used by the double-click edit path so legacy/static image cells stay
+	 * images instead of being converted to editable diagrams. The resolved
+	 * border (px) is kept as the groupPadding cell style, like
+	 * createMermaidImageXml (legacy cells' stored `border` migrates there on
+	 * the first re-render and is no longer written). The
+	 * optional dataAttr selects the source attribute for other converters
+	 * (PlantUML passes plantUmlData), like replaceLockedGroupChildren.
+	 */
+	EditorUi.prototype.updateMermaidImage = function(cell, text, config, parsedXml, border, dataAttr)
+	{
+		var graph = this.editor.graph;
+		var img = this.getMermaidImageForXml(parsedXml, border);
+		graph.setCellStyles('image', img.data, [cell]);
+
+		// Upgrades image cells created before the pen handle existed
+		graph.setCellStyles('editIcon', '1', [cell]);
+
+		// Keeps the padding on the style so edits carry over and the margin
+		// round-trips across image/diagram switches
+		graph.setCellStyles('groupPadding', img.border, [cell]);
+		var geo = graph.model.getGeometry(cell);
+
+		if (geo != null)
+		{
+			geo = geo.clone();
+			geo.width = img.width;
+			geo.height = img.height;
+			graph.cellsResized([cell], [geo], false);
+		}
+
+		graph.setAttributeForCell(cell, (dataAttr != null) ? dataAttr : 'mermaidData',
+			JSON.stringify({data: text, config: config}, null, 2));
+	};
+
+	/**
+	 * Re-renders a Mermaid or PlantUML image cell from its stored source so
+	 * the image applies the cell's current groupPadding style. Used when the
+	 * style changes outside the edit dialog (Arrange panel padding input,
+	 * Edit Style, ...). Legacy server-rendered PlantUML payloads (with a
+	 * `format`) are skipped — re-rendering would silently migrate them to
+	 * the native representation, which only the edit dialog does. Parse
+	 * errors are ignored (the style keeps the new value; a broken source
+	 * surfaces its error on the next explicit re-edit). The parse configs
+	 * mirror the edit dialog's image branches.
+	 */
+	EditorUi.prototype.refreshMermaidImage = function(cell)
+	{
+		var graph = this.editor.graph;
+		var data = graph.getAttributeForCell(cell, 'plantUmlData');
+		var dataAttr = (data != null) ? 'plantUmlData' : 'mermaidData';
+		data = (data != null) ? data : graph.getAttributeForCell(cell, 'mermaidData');
+		var obj = null;
+
+		if (data != null)
+		{
+			try
+			{
+				obj = JSON.parse(data);
+			}
+			catch (e)
+			{
+				// ignored: not a valid source payload
+			}
+		}
+
+		if (obj != null && obj.data != null && obj.format == null)
+		{
+			var border = this.getMermaidImageBorder(cell, obj.border);
+			var ignore = function() {};
+
+			// Re-render must reproduce the same image, so it re-parses with the
+			// cell's own stored config and writes it back unchanged: a
+			// self-describing image (non-null config) keeps its config, a legacy
+			// image (null config) keeps parsing with legacyMermaidConfig and
+			// stays null. PlantUML keeps its null contract.
+			var storeConfig = (dataAttr == 'plantUmlData' || obj.config == null) ?
+				null : obj.config;
+			var apply = mxUtils.bind(this, function(xml)
+			{
+				// Skips stale applies: if the padding changed again while the
+				// parse was in flight, the newer refresh owns the cell
+				if (graph.model.contains(cell) &&
+					this.getMermaidImageBorder(cell, obj.border) == border)
+				{
+					graph.model.beginUpdate();
+					try
+					{
+						this.updateMermaidImage(cell, obj.data, storeConfig, xml,
+							border, dataAttr);
+					}
+					finally
+					{
+						graph.model.endUpdate();
+					}
+				}
+			});
+
+			if (dataAttr == 'plantUmlData')
+			{
+				this.parsePlantUmlDiagram(obj.data, null, apply, ignore);
+			}
+			else
+			{
+				this.parseMermaidDiagram(obj.data, mxUtils.clone((obj.config != null) ?
+					obj.config : EditorUi.legacyMermaidConfig), apply, ignore);
+			}
+		}
+	};
+
+	/**
+	 * Swaps a Mermaid or PlantUML cell for the other representation (editable
+	 * diagram group <-> static SVG image) when the output type is changed in
+	 * the edit dialog. newXml is the replacement content from the converter's
+	 * wrapGroup or createMermaidImageXml; it is imported at the old cell's
+	 * visible top-left (parent offsets are accumulated so a nested cell keeps
+	 * its on-screen position) and the old cell is removed. Like the insert
+	 * paths, the imported content lands in the current layer. Returns the
+	 * inserted cells so callers can restyle the replacement (e.g. carry the
+	 * groupPadding onto the new wrapper).
+	 */
+	EditorUi.prototype.replaceMermaidCell = function(cell, newXml)
+	{
+		var graph = this.editor.graph;
+
+		// getBoundingBoxFromGeometry, not the stored geometry: the editable
+		// diagram wrapper is a transparentBounds group whose geometry is
+		// pinned at (0,0,0,0) — its visible position is derived from the
+		// children, so reading geo.x/y would plant the replacement image at
+		// the parent origin. The override resolves the derived box; plain
+		// cells (images, legacy text) yield their geometry box as before.
+		var bounds = graph.getBoundingBoxFromGeometry([cell]);
+		var dx = (bounds != null) ? bounds.x : 0;
+		var dy = (bounds != null) ? bounds.y : 0;
+		var parent = graph.model.getParent(cell);
+
+		while (parent != null && graph.model.isVertex(parent))
+		{
+			var pgeo = graph.model.getGeometry(parent);
+
+			if (pgeo != null)
+			{
+				dx += pgeo.x;
+				dy += pgeo.y;
+			}
+
+			parent = graph.model.getParent(parent);
+		}
+
+		graph.getModel().beginUpdate();
+		try
+		{
+			// Import before removing so a parse/import failure can't drop the
+			// original; crop positions the new cells from their own bounds, so
+			// the still-present old cell doesn't affect placement.
+			var inserted = this.importXml(newXml, dx, dy, true, null, null, true);
+			graph.model.remove(cell);
+			graph.setSelectionCells(inserted);
+		}
+		finally
+		{
+			graph.getModel().endUpdate();
+		}
+
+		graph.scrollCellToVisible(graph.getSelectionCell());
+
+		return inserted;
 	};
 
 	/**
@@ -11170,27 +13736,19 @@
 		crop = (crop != null) ? crop : true;
 		resizeImages = (resizeImages != null) ? resizeImages : true;
 		
-		// Handles special case for Gliffy data which requires async server-side for parsing
+		// Handles special case for Gliffy data which is converted asynchronously
 		if (text != null)
 		{
-			if (Graph.fileSupport && new XMLHttpRequest().upload && this.isRemoteFileFormat(text))
+			if (Graph.fileSupport && this.isGliffyData(text))
 			{
-				if (this.isOffline())
+				// Fixes possible parsing problems with ASCII 160 (non-breaking space).
+				// No error handler: failures stay silent here, as they were
+				// when the XHR callback ignored non-2xx responses.
+				this.importGliffy(text.replace(/\s+/g,' '), mxUtils.bind(this, function(xml)
 				{
-					this.showError(mxResources.get('error'), mxResources.get('notInOffline'));
-				}
-				else
-				{
-					// Fixes possible parsing problems with ASCII 160 (non-breaking space)
-					this.parseFileData(text.replace(/\s+/g,' '), mxUtils.bind(this, function(xhr)
-					{
-						if (xhr.readyState == 4 && xhr.status >= 200 && xhr.status <= 299)
-						{
-							this.editor.graph.setSelectionCells(this.insertTextAt(
-								xhr.responseText, dx, dy, true));
-						}
-					}));
-				}
+					this.editor.graph.setSelectionCells(this.insertTextAt(
+						xml, dx, dy, true));
+				}));
 
 				// Returns empty cells array as it is aysynchronous
 				return [];
@@ -11423,11 +13981,21 @@
 	};
 	
 	/**
-	 * Returns true for Gliffy data.
+	 * Returns true for Gliffy data (the modern JSON save format), which is
+	 * converted with the local client-side converter (see importGliffy).
+	 */
+	EditorUi.prototype.isGliffyData = function(data, filename)
+	{
+		return /(\"contentType\":\s*\"application\/gliffy\+json\")/.test(data);
+	};
+
+	/**
+	 * Deprecated alias for isGliffyData, kept for external callers: Gliffy
+	 * conversion is local, no remote conversion service is involved.
 	 */
 	EditorUi.prototype.isRemoteFileFormat = function(data, filename)
 	{
-		return /(\"contentType\":\s*\"application\/gliffy\+json\")/.test(data);
+		return this.isGliffyData(data, filename);
 	};
 	
 	/**
@@ -11608,29 +14176,15 @@
 		            	{
 		                	gliffyLatestVer.zipEntry.async("string").then(function(data)
 		                	{
-		                		if (new XMLHttpRequest().upload && ui.isRemoteFileFormat(data, file.name))
+		                		if (ui.isGliffyData(data, file.name))
 		                		{
-									if (ui.isOffline())
+									ui.importGliffy(data, function(xml)
 									{
-										ui.showError(mxResources.get('error'), mxResources.get('notInOffline'), null, onerror);
-									}
-									else
+										success(xml);
+									}, function()
 									{
-										ui.parseFileData(data, mxUtils.bind(this, function(xhr)
-										{
-											if (xhr.readyState == 4)
-											{
-												if (xhr.status >= 200 && xhr.status <= 299)
-												{
-													success(xhr.responseText);
-												}
-												else
-												{
-													onerror();
-												}
-											}
-										}), file.name);
-									}
+										onerror();
+									}, file.name);
 		                		}
 		                		else
 		            			{
@@ -11755,44 +14309,40 @@
 
 			this.importVisio(file, handleResult);
 		}
-		else if (new XMLHttpRequest().upload && this.isRemoteFileFormat(data, filename))
+		else if (this.isGliffyData(data, filename))
 		{
-			if (this.isOffline())
+			//  LATER: done and async are a hack before making this asynchronous
+			async = true;
+
+			// Returns empty cells array as it is aysynchronous
+			var importData = mxUtils.bind(this, function(data)
 			{
-				this.showError(mxResources.get('error'), mxResources.get('notInOffline'));
+				this.importGliffy(data, handleResult, mxUtils.bind(this, function(err)
+				{
+					if (done != null)
+					{
+						done(null);
+						this.showError(mxResources.get('error'),
+							(err != null && err.status == 413) ? mxResources.get('diagramTooLarge') :
+								mxResources.get('unknownError'));
+					}
+				}), filename);
+			});
+
+			if (data != null)
+			{
+				importData(data);
 			}
 			else
 			{
-				//  LATER: done and async are a hack before making this asynchronous
-				async = true;
+				var reader = new FileReader();
 
-				// Returns empty cells array as it is aysynchronous
-				var parseCallback = mxUtils.bind(this, function(xhr)
+				reader.onload = function()
 				{
-					if (xhr.readyState == 4)
-					{
-						if (xhr.status >= 200 && xhr.status <= 299)
-						{
-							handleResult(xhr.responseText);
-						}
-						else if (done != null)
-						{
-							done(null);
-							this.showError(mxResources.get('error'),
-								xhr.status == 413 ? mxResources.get('diagramTooLarge') :
-									mxResources.get('unknownError'));
-						}
-					}
-				});
+					importData(reader.result);
+				};
 
-				if (data != null)
-				{
-					this.parseFileData(data, parseCallback, filename);
-				}
-				else
-				{
-					this.parseFile(file, parseCallback, filename);
-				}
+				reader.readAsText(file);
 			}
 		}
 		else if (data.indexOf('PK') == 0 && file != null)
@@ -12342,51 +14892,7 @@
 	};
 	
 	/**
-	 * Parses the file using XHR2 via the server. File can be a blob or file object.
-	 * Filename is an optional parameter for blobs (that do not have a filename).
-	 */
-	EditorUi.prototype.parseFile = function(file, fn, filename)
-	{
-		filename = (filename != null) ? filename : file.name;
-
-		var reader = new FileReader();
-
-        reader.onload = mxUtils.bind(this, function()
-		{
-			this.parseFileData(reader.result, fn, filename)
-        });
-
-        reader.readAsText(file);
-	};
-
-	//TODO Use this version of the function instead of creating a Blob then read it again
-	EditorUi.prototype.parseFileData = function(data, fn, filename)
-	{
-
-		var xhr = new XMLHttpRequest();
-		xhr.open('POST', OPEN_URL);
-		xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-
-		xhr.onreadystatechange = function()
-		{
-			fn(xhr);
-		};
-		
-		xhr.send('format=xml&filename=' + encodeURIComponent(filename) + '&data=' + encodeURIComponent(data));
-		
-		try
-		{
-			EditorUi.logEvent({category: 'GLIFFY-IMPORT-FILE',
-				action: 'size_' + file.size});
-		}
-		catch (e)
-		{
-			// ignore
-		}
-	};
-	
-	/**
-	 * 
+	 *
 	 */
 	EditorUi.prototype.isResampleImageSize = function(size, thresh)
 	{
@@ -12567,9 +15073,101 @@
 	EditorUi.prototype.init = function()
 	{
 		mxStencilRegistry.allowEval = mxStencilRegistry.allowEval && !this.isOfflineApp();
-		
+
 		var ui = this;
 		var graph = this.editor.graph;
+
+		// Live obstacle-avoiding routing for edges flagged libavoidRouting=1
+		// (re-route on insert / reconnect / connected-shape move). Guarded on the
+		// extensions bundle being present (eagerly loaded before this init in the
+		// editor); a no-op in viewers where it isn't loaded.
+		if (typeof LibavoidRouting !== 'undefined' && LibavoidRouting.installAutoRouting != null)
+		{
+			LibavoidRouting.installAutoRouting(this);
+		}
+
+		// Persist the global current edge style (the toolbar dropdown's choice for new
+		// edges when nothing is selected) across sessions. styleChanged fires with
+		// force=true only for no-selection picks and "Set as Default Style"
+		// (edgeStyleChange with edges.length==0 / setDefaultStyle) — i.e. genuine
+		// current-style changes, not per-cell edits or programmatic resets. Restored in
+		// updateDefaultStyles; cleared by the "Clear Default Style" action.
+		this.addListener('styleChanged', mxUtils.bind(this, function(sender, evt)
+		{
+			if (evt.getProperty('force') && typeof mxSettings !== 'undefined' &&
+				mxSettings.setCurrentEdgeStyle != null && mxSettings.settings != null)
+			{
+				mxSettings.setCurrentEdgeStyle(mxUtils.clone(this.editor.graph.currentEdgeStyle));
+			}
+		}));
+
+		// updateDefaultStyles (which restores the persisted edge style) only runs on
+		// theme/sketch changes, not on a plain load — so restore here too, on init,
+		// after settings are loaded and the graph exists.
+		this.restorePersistedEdgeStyle();
+
+		// Auto-play any attached animation script when viewing read-only
+		// (chromeless / lightbox / embed mode). Previously this required
+		// loading plugins/animation.js via ?p=anim — now it works on any
+		// diagram that has an animation script attached.
+		//
+		// Opt-out via ?animate=0 in the URL — useful for sharing an animated
+		// diagram statically (e.g. as a snapshot for review) without it
+		// auto-starting on every visitor.
+		//
+		// Loop behavior comes from the animation data itself (defaults to
+		// true — the legacy chromeless animation plugin always looped). Users
+		// can opt out via the Loop checkbox in the AnimationDialog.
+		if (this.editor.isChromelessView() && urlParams['animate'] != '0')
+		{
+			// Track the root the player was last started for. Multiple
+			// `mxEvent.ROOT` events fire during file loading (initial
+			// empty root → file root, plus spurious fires from
+			// `mxGraph.processChange`), and `fileLoaded` fires too —
+			// each one would otherwise stop+restart the player. If the
+			// pending player is stopped mid-fade, `graph.executingCustomActions`
+			// stays `true` (because the fade's `setTimeout` hasn't run
+			// the reset-on-completion branch yet); the next player's
+			// `executeCustomActions` call then hits the
+			// "already-executing" abort branch and silently fails. End
+			// result: animation never gets past step 0.
+			//
+			// Comparing roots gives us a stable identity for "did the
+			// page actually change?" — initial null → file root counts
+			// as a change, but redundant ROOT/fileLoaded for the same
+			// root do not.
+			var lastAnimRoot = null;
+
+			var startAnimation = function()
+			{
+				var root = graph.getModel().getRoot();
+
+				// Same root + we already have a player → no-op. The
+				// existing playback continues unmolested.
+				if (root === lastAnimRoot &&
+					ui.chromelessAnimationPlayer != null)
+				{
+					return true;
+				}
+
+				lastAnimRoot = root;
+
+				if (ui.chromelessAnimationPlayer != null)
+				{
+					ui.chromelessAnimationPlayer.stop();
+				}
+
+				ui.chromelessAnimationPlayer = Editor.playAnimationOnGraph(graph);
+
+				return ui.chromelessAnimationPlayer != null;
+			};
+
+			startAnimation();
+			this.editor.addListener('fileLoaded', startAnimation);
+			// Multi-page diagrams: restart on page switch so each page's
+			// animation runs when navigated to in the lightbox.
+			graph.addListener(mxEvent.ROOT, startAnimation);
+		}
 
 		var graphIsEnabled = graph.isEnabled;
 
@@ -12579,8 +15177,9 @@
 		};
 
 		// Shows link icons in main graph
-		graph.showLinkIcons = Editor.showLinkIcons;
-		graph.showTooltipIcons = Editor.showTooltipIcons;
+		graph.showLinkIcons = Editor.showLinkIcons || urlParams['link-icons'] == '1';
+		graph.showTooltipIcons = Editor.showTooltipIcons || urlParams['tooltip-icons'] == '1';
+		graph.showNoteIcons = Editor.showNoteIcons && urlParams['note-icons'] != '0';
 
 		// Opens the edit tooltip dialog for the given cell
 		var editorUi = this;
@@ -12593,7 +15192,21 @@
 			}
 		};
 
-		// Resolves page links to page names for link overlay tooltips
+		// Opens the note editor for the given cell
+		graph.editNote = function(cell)
+		{
+			if (cell != null)
+			{
+				editorUi.actions.get('editNote').funct();
+			}
+		};
+
+		// Resolves page links to page names for link overlay tooltips.
+		// Custom-action links (`data:action/json,…`) route through
+		// `getLinkTitle`, which delegates to `EditorUi.getCustomLinkTitle`
+		// so the overlay tooltip matches what the Edit Link dialog and
+		// the link hint display (user `title`, "Effects (N)", or the
+		// localized label of the first action key).
 		graph.getLinkOverlayTooltip = function(link)
 		{
 			if (Graph.isPageLink(link) && editorUi.pages != null)
@@ -12606,6 +15219,10 @@
 					return page.getName() || mxResources.get('pageWithNumber',
 						[mxUtils.indexOf(editorUi.pages, page) + 1]);
 				}
+			}
+			else if (this.isCustomLink(link))
+			{
+				return this.getLinkTitle(link);
 			}
 
 			return link;
@@ -12625,71 +15242,121 @@
 			};
 		}
 		
-		// Starts editing PlantUML data
-		graph.cellEditor.editPlantUmlData = function(cell, trigger, data)
+		// Re-renders Mermaid/PlantUML image cells when their groupPadding
+		// style changes (Arrange panel padding input, Edit Style, ...), so
+		// the image margin follows the style immediately. Runs from
+		// BEFORE_UNDO — the endingUpdate latch folds the re-render into the
+		// same undoable edit (like the sync layout manager), so undo
+		// restores style and image together; if the parser bundle still has
+		// to load, the apply lands in its own edit instead (async callback).
+		// The re-render's own writes never re-trigger this: they keep the
+		// groupPadding value unchanged, and only changed values react.
+		var groupPaddingValue = function(style)
 		{
-			var obj = JSON.parse(data);
-			
-	    	var dlg = new SimpleTextareaDialog(ui, obj.data, function(text)
-			{
-	    		if (text != null)
-				{
-	    			if (ui.spinner.spin(document.body, mxResources.get('inserting')))
-	    			{
-	    				ui.generatePlantUmlImage(text, obj.format, function(data, w, h)
-	    				{
-	    					ui.spinner.stop();
+			var m = /(?:^|;)groupPadding=([^;]*)/.exec((style != null) ? style : '');
 
-	    					graph.getModel().beginUpdate();
-	    					try
-	    					{
-	    						if (obj.format == 'txt')
-		    					{
-		    						graph.labelChanged(cell, '<pre>' + data + '</pre>');
-		    						graph.updateCellSize(cell, true);
-		    					}
-	    						else
-	    						{
-	    							graph.setCellStyles('image', ui.convertDataUri(data), [cell]);
-	    							var geo = graph.model.getGeometry(cell);
-	    							
-	    							if (geo != null)
-	    							{
-	    								geo = geo.clone();
-	    								geo.width = w;
-	    								geo.height = h;
-	    								graph.cellsResized([cell], [geo], false);
-	    							}
-	    						}
-	    						
-	    						graph.setAttributeForCell(cell, 'plantUmlData',
-		    						JSON.stringify({data: text, format: obj.format}));
-	    					}
-	    					finally
-	    					{
-	    						graph.getModel().endUpdate();
-	    					}
-	    				}, function(e)
-	    				{
-	    					ui.handleError(e);
-	    				});
-	    			}
+			return (m != null) ? m[1] : null;
+		};
+
+		graph.model.addListener(mxEvent.BEFORE_UNDO, function(sender, evt)
+		{
+			var edit = evt.getProperty('edit');
+
+			if (edit != null && edit.changes != null)
+			{
+				// Snapshot: the refresh appends its own writes to this edit
+				var count = edit.changes.length;
+				var cells = [];
+
+				for (var i = 0; i < count; i++)
+				{
+					var change = edit.changes[i];
+
+					if (change instanceof mxStyleChange && change.cell != null &&
+						graph.model.isVertex(change.cell) &&
+						groupPaddingValue(change.style) != groupPaddingValue(change.previous) &&
+						/(?:^|;)shape=image(?:;|$)/.test((change.style != null) ? change.style : '') &&
+						(graph.getAttributeForCell(change.cell, 'mermaidData') != null ||
+						graph.getAttributeForCell(change.cell, 'plantUmlData') != null) &&
+						mxUtils.indexOf(cells, change.cell) < 0)
+					{
+						cells.push(change.cell);
+					}
 				}
-			});
-			ui.showDialog(dlg.container, 640, 420, true, true, null,
-				null, null, new mxRectangle(0, 0, 320, 280));
+
+				for (var i = 0; i < cells.length; i++)
+				{
+					ui.refreshMermaidImage(cells[i]);
+				}
+			}
+		});
+
+		// Shows a source-edit textarea dialog whose close paths (Cancel,
+		// Escape, close icon) ask for confirmation when unapplied edits
+		// would be lost, and whose modal background never closes it.
+		var showGuardedTextareaDialog = function(dlg)
+		{
+			var discarded = false;
+
+			ui.showDialog(dlg.container, 640, 420, true, true,
+				function(cancel, isEsc)
+				{
+					if (!discarded && dlg.shouldConfirmClose())
+					{
+						ui.confirm(mxResources.get('allChangesLost'), null,
+							function()
+							{
+								discarded = true;
+								ui.hideDialog(true);
+							}, mxResources.get('cancel'),
+							mxResources.get('discardChanges'));
+
+						// vetoes this close; the confirmation above decides
+						return false;
+					}
+				}, null, null, new mxRectangle(0, 0, 320, 280), true);
 			dlg.init();
 		};
-		
-		// Starts editing Mermaid data. Branches on the current cell's shape:
-		// - shape=image: legacy image path (regenerate SVG via generateMermaidImage)
-		// - otherwise:   native subgraph path (re-parse and replace children)
-		graph.cellEditor.editMermaidData = function(cell, trigger, data)
+
+		// Starts editing PlantUML data. Re-parses via the native converter
+		// only — the server-rendered outputs are gone. Legacy server-rendered
+		// cells (payloads with a `format`: png/svg images or txt <pre> text)
+		// are migrated to the chosen native representation on the fly.
+		graph.cellEditor.editPlantUmlData = function(cell, trigger, data)
 		{
 			var obj = JSON.parse(data);
 			var style = graph.getCurrentCellStyle(cell);
 			var isImage = mxUtils.getValue(style, mxConstants.STYLE_SHAPE, '') ==
 				mxConstants.SHAPE_IMAGE;
+
+			// Native editable group wrapper (no `format`, not an image): its
+			// children can be replaced in place, preserving user style and
+			// label customizations via the plantUml* identity stamps
+			// (see replaceLockedGroupChildren).
+			var isGroup = obj.format == null && !isImage;
+
+			// Diagram (editable group) vs Image (static SVG) output dropdown,
+			// mirroring the Insert > PlantUML dialog and letting the user switch
+			// an existing cell between the two on re-edit. Hidden for embedded
+			// services (only the default diagram output is offered there), like
+			// ParseDialog. The select is always constructed so the apply handler
+			// can read its value; it is only added to the dialog when shown.
+			var showTypeSelect = ui.getServiceName() == 'draw.io' ||
+				ui.getServiceName() == 'atlassian';
+			var typeSelect = document.createElement('select');
+			typeSelect.className = 'geBtn';
+
+			var diagramOption = document.createElement('option');
+			diagramOption.setAttribute('value', 'plantUmlDiagram');
+			mxUtils.write(diagramOption, mxResources.get('diagram'));
+			typeSelect.appendChild(diagramOption);
+
+			var imageOption = document.createElement('option');
+			imageOption.setAttribute('value', 'plantUmlImage');
+			mxUtils.write(imageOption, mxResources.get('image'));
+			typeSelect.appendChild(imageOption);
+
+			typeSelect.value = isImage ? 'plantUmlImage' : 'plantUmlDiagram';
 
 	    	var dlg = new SimpleTextareaDialog(ui, obj.data, function(text)
 			{
@@ -12705,62 +15372,288 @@
 
 	    		var onError = function(e)
 	    		{
+	    			// Keeps the dialog open on parse failure (e.g. a syntax
+	    			// error) so the input isn't lost, like ParseDialog
 	    			ui.spinner.stop();
 	    			ui.handleError(e);
 	    		};
 
-	    		if (isImage)
-				{
-	    			ui.generateMermaidImage(text, obj.config, function(imageData, w, h)
-	    			{
-	    				ui.spinner.stop();
+	    		var asImage = typeSelect.value == 'plantUmlImage';
 
+	    		// Only a native group carries a converter config; images and
+	    		// legacy server-rendered cells parse with null, like the
+	    		// insert paths
+	    		var config = isGroup ? obj.config : null;
+
+	    		ui.parsePlantUmlDiagram(text, config, function(xml, warnings)
+	    		{
+	    			ui.spinner.stop();
+
+	    			// Parsing succeeded: close the dialog (applyKeepsOpen
+	    			// left it open during the async parse) and apply
+	    			dlg.hide();
+
+	    			try
+	    			{
 	    				graph.getModel().beginUpdate();
 	    				try
 	    				{
-	    					graph.setCellStyles('image', imageData, [cell]);
-	    					var geo = graph.model.getGeometry(cell);
-
-	    					if (geo != null)
+	    					if (isImage && asImage)
 	    					{
-	    						geo = geo.clone();
-	    						geo.width = Math.max(geo.width, w);
-	    						geo.height = Math.max(geo.height, h);
-	    						graph.cellsResized([cell], [geo], false);
+	    						// Keep image cells as images: re-render the SVG and
+	    						// update the cell in place. Legacy server-rendered
+	    						// images lose their `format` here (migrated to the
+	    						// client-rendered representation). The padding follows
+	    						// the groupPadding style (legacy stored border as
+	    						// fallback), see getMermaidImageBorder.
+	    						ui.updateMermaidImage(cell, text, null, xml,
+	    							ui.getMermaidImageBorder(cell, obj.border),
+	    							'plantUmlData');
 	    					}
+	    					else if (isGroup && !asImage)
+	    					{
+	    						ui.replaceLockedGroupChildren(cell, xml, text, config,
+	    						{
+	    							wrapGroup: mxPlantUmlToDrawio.wrapGroup,
+	    							dataAttr: 'plantUmlData',
+	    							attrPrefix: 'plantUml'
+	    						});
+	    					}
+	    					else
+	    					{
+	    						// Output type changed (or a legacy <pre> text cell is
+	    						// migrated): swap the cell for the chosen
+	    						// representation, keeping its position. The padding
+	    						// follows the old cell across the switch (its
+	    						// groupPadding style, or a legacy stored border).
+	    						var border = ui.getMermaidImageBorder(cell, obj.border);
+	    						var inserted = ui.replaceMermaidCell(cell, asImage ?
+	    							ui.createMermaidImageXml(text, null, xml, null,
+	    								border, 'plantUmlData') :
+	    							mxPlantUmlToDrawio.wrapGroup(xml, text, config));
 
-	    					graph.setAttributeForCell(cell, 'mermaidData',
-	    						JSON.stringify({data: text, config:
-	    						obj.config}, null, 2));
+	    						if (!asImage && border != null)
+	    						{
+	    							graph.setCellStyles('groupPadding',
+	    								border, inserted);
+	    						}
+	    					}
 	    				}
 	    				finally
 	    				{
 	    					graph.getModel().endUpdate();
 	    				}
-	    			}, onError);
-				}
-	    		else
-				{
-	    			ui.parseMermaidDiagram(text, obj.config, function(xml)
-	    			{
-	    				ui.spinner.stop();
 
-	    				try
-	    				{
-	    					ui.replaceLockedGroupChildren(cell, xml, text, obj.config);
-	    				}
-	    				catch (e)
-	    				{
-	    					ui.handleError(e);
-	    				}
-	    			}, onError, null, true);
+	    				// Reports what the converter could not use, once the
+	    				// apply succeeded: the cell keeps the new content. A
+	    				// failed apply reports its own error instead
+	    				ui.showPlantUmlWarnings(warnings);
+	    			}
+	    			catch (e)
+	    			{
+	    				ui.handleError(e);
+	    			}
+	    		}, onError);
+			}, null, null, showTypeSelect ? typeSelect : null, true,
+				(ui.sidebar == null) ? null : function(text, evt)
+			{
+				// Previews the parse result the apply would produce, in the
+				// zoomable tooltip, keeping the dialog open
+				if (ui.spinner.spin(document.body, mxResources.get('loading')))
+				{
+					ui.parsePlantUmlDiagram(text, isGroup ? obj.config : null,
+						function(xml, warnings)
+					{
+						ui.spinner.stop();
+						ui.showPreviewTooltip(xml, evt);
+
+						// Reports what the converter could not use, after the
+						// preview is up: the tooltip stays open
+						ui.showPlantUmlWarnings(warnings);
+					}, function(e)
+					{
+						ui.spinner.stop();
+						ui.handleError(e);
+					});
 				}
 			});
-			ui.showDialog(dlg.container, 640, 420, true, true, null,
-				null, null, new mxRectangle(0, 0, 320, 280));
-			dlg.init();
+			showGuardedTextareaDialog(dlg);
 		};
-		
+
+		// Starts editing Mermaid data. Re-parses via the native parser and
+		// replaces the cell's children with the result. Legacy shape=image
+		// mermaid cells are migrated to the editable group wrapper on the fly.
+		graph.cellEditor.editMermaidData = function(cell, trigger, data)
+		{
+			var obj = JSON.parse(data);
+			var style = graph.getCurrentCellStyle(cell);
+			var isImage = mxUtils.getValue(style, mxConstants.STYLE_SHAPE, '') ==
+				mxConstants.SHAPE_IMAGE;
+
+			// A legacy image cell is an image with no stored config (created
+			// before images became self-describing). It keeps the previous look
+			// by re-parsing with legacyMermaidConfig and stays null; every other
+			// case reuses the cell's stored config (or the configured default
+			// when it has none) and persists it - see the config resolution in
+			// the apply and preview handlers below.
+			var legacyImage = isImage && obj.config == null;
+
+			// Diagram (editable group) vs Image (static SVG) output dropdown,
+			// mirroring the Insert > Mermaid dialog and letting the user switch
+			// an existing cell between the two on re-edit. Hidden for embedded
+			// services (only the default diagram output is offered there), like
+			// ParseDialog. The select is always constructed so the apply handler
+			// can read its value; it is only added to the dialog when shown.
+			var showTypeSelect = ui.getServiceName() == 'draw.io' ||
+				ui.getServiceName() == 'atlassian';
+			var typeSelect = document.createElement('select');
+			typeSelect.className = 'geBtn';
+
+			var diagramOption = document.createElement('option');
+			diagramOption.setAttribute('value', 'mermaid');
+			mxUtils.write(diagramOption, mxResources.get('diagram'));
+			typeSelect.appendChild(diagramOption);
+
+			var imageOption = document.createElement('option');
+			imageOption.setAttribute('value', 'mermaidImage');
+			mxUtils.write(imageOption, mxResources.get('image'));
+			typeSelect.appendChild(imageOption);
+
+			typeSelect.value = isImage ? 'mermaidImage' : 'mermaid';
+
+	    	var dlg = new SimpleTextareaDialog(ui, obj.data, function(text)
+			{
+	    		if (text == null)
+				{
+	    			return;
+				}
+
+	    		if (!ui.spinner.spin(document.body, mxResources.get('inserting')))
+	    		{
+	    			return;
+				}
+
+	    		var onError = function(e)
+	    		{
+	    			// Keeps the dialog open on parse failure (e.g. a syntax
+	    			// error) so the input isn't lost, like ParseDialog
+	    			ui.spinner.stop();
+	    			ui.handleError(e);
+	    		};
+
+	    		var asImage = typeSelect.value == 'mermaidImage';
+
+	    		// A legacy image re-edited as an image keeps its previous look and
+	    		// the null contract (parse with legacyMermaidConfig, store null).
+	    		// Every other case is self-describing: reuse the cell's stored
+	    		// config, or the configured default when it has none (a legacy
+	    		// cell being converted, or an old null diagram), and persist that
+	    		// same config so the cell renders identically across deployments.
+	    		// config is cloned per parse call so getMermaidConfig's in-place
+	    		// edits (securityLevel, startOnLoad, ...) never mutate the stored
+	    		// config or the shared default template.
+	    		var config, storeConfig;
+
+	    		if (asImage && legacyImage)
+	    		{
+	    			config = EditorUi.legacyMermaidConfig;
+	    			storeConfig = null;
+	    		}
+	    		else
+	    		{
+	    			// getInsertMermaidConfig() is null when unconfigured, so an
+	    			// old null diagram re-edited without a config stays null (no
+	    			// change); a configured deployment adopts and persists its config.
+	    			config = (obj.config != null) ? obj.config :
+	    				EditorUi.getInsertMermaidConfig();
+	    			storeConfig = config;
+	    		}
+
+	    		ui.parseMermaidDiagram(text, mxUtils.clone(config), function(xml)
+	    		{
+	    			ui.spinner.stop();
+
+	    			// Parsing succeeded: close the dialog (applyKeepsOpen
+	    			// left it open during the async parse) and apply
+	    			dlg.hide();
+
+	    			try
+	    			{
+	    				graph.getModel().beginUpdate();
+	    				try
+	    				{
+	    					if (isImage && asImage)
+	    					{
+	    						// Keep image cells as images: re-render the SVG and
+	    						// update the cell in place. storeConfig is null for a
+	    						// legacy image (keeps that format) and the resolved
+	    						// config for a self-describing one. The padding follows
+	    						// the groupPadding style (legacy stored border as
+	    						// fallback), see getMermaidImageBorder.
+	    						ui.updateMermaidImage(cell, text, storeConfig, xml,
+	    							ui.getMermaidImageBorder(cell, obj.border));
+	    					}
+	    					else if (!isImage && !asImage)
+	    					{
+	    						ui.replaceLockedGroupChildren(cell, xml, text, storeConfig);
+	    					}
+	    					else
+	    					{
+	    						// Output type changed: swap the cell for the other
+	    						// representation, keeping its position. The padding
+	    						// follows the old cell across the switch (its
+	    						// groupPadding style, or a legacy stored border); the
+	    						// new cell stores the resolved config (self-describing).
+	    						var border = ui.getMermaidImageBorder(cell, obj.border);
+	    						var inserted = ui.replaceMermaidCell(cell, asImage ?
+	    							ui.createMermaidImageXml(text, storeConfig, xml, null, border) :
+	    							mxMermaidToDrawio.wrapGroup(xml, text, storeConfig));
+
+	    						if (!asImage && border != null)
+	    						{
+	    							graph.setCellStyles('groupPadding',
+	    								border, inserted);
+	    						}
+	    					}
+	    				}
+	    				finally
+	    				{
+	    					graph.getModel().endUpdate();
+	    				}
+	    			}
+	    			catch (e)
+	    			{
+	    				ui.handleError(e);
+	    			}
+	    		}, onError);
+			}, null, null, showTypeSelect ? typeSelect : null, true,
+				(ui.sidebar == null) ? null : function(text, evt)
+			{
+				// Previews the parse result the apply would produce, in the
+				// zoomable tooltip, keeping the dialog open. Uses the same
+				// parse-config selection as the apply handler above.
+				if (ui.spinner.spin(document.body, mxResources.get('loading')))
+				{
+					var config = (typeSelect.value == 'mermaidImage' && legacyImage) ?
+						EditorUi.legacyMermaidConfig :
+						((obj.config != null) ? obj.config :
+							EditorUi.getInsertMermaidConfig());
+
+					ui.parseMermaidDiagram(text, mxUtils.clone(config),
+						function(xml)
+					{
+						ui.spinner.stop();
+						ui.showPreviewTooltip(xml, evt);
+					}, function(e)
+					{
+						ui.spinner.stop();
+						ui.handleError(e);
+					});
+				}
+			});
+			showGuardedTextareaDialog(dlg);
+		};
+
 		// Overrides function to add editing for Plant UML.
 		var cellEditorStartEditing = graph.cellEditor.startEditing;
 		graph.cellEditor.startEditing = function(cell, trigger, initialText)
@@ -12787,7 +15680,7 @@
 				{
 					data = this.graph.getAttributeForCell(cell, 'mermaidData');
 
-					if (data != null && window.isMermaidEnabled)
+					if (data != null && EditorUi.isMermaidSupported())
 					{
 						this.editMermaidData(cell, trigger, data);
 					}
@@ -12822,14 +15715,29 @@
 		graph.customLinkClicked = function(link, associatedCell)
 		{
 			var done = false;
-			
+
 			try
 			{
-				var bounds = this.getGraphBounds();
+				// `view.graphBounds` (raw, unscaled) is the only honest
+				// "did the diagram itself change?" signal — the public
+				// `getGraphBounds()` override multiplies by
+				// `currentScale` in useCssTransforms mode, so a viewbox
+				// action that only changes scale would look like an
+				// edit and trigger the chromelessResize fallback,
+				// which would then undo the viewbox. Snapshot the raw
+				// bounds and compare those.
+				var rawBefore = this.view.graphBounds;
+				var snapshot = (rawBefore != null) ? new mxRectangle(
+					rawBefore.x, rawBefore.y,
+					rawBefore.width, rawBefore.height) : null;
+
 				ui.handleCustomLink(link, associatedCell);
 				done = true;
 
-				if (ui.chromelessResize && !bounds.equals(this.getGraphBounds()))
+				var rawAfter = this.view.graphBounds;
+
+				if (ui.chromelessResize && snapshot != null &&
+					rawAfter != null && !snapshot.equals(rawAfter))
 				{
 					ui.chromelessResize();
 					this.scrollCellToVisible(associatedCell);
@@ -12839,7 +15747,7 @@
 			{
 				ui.handleError(e);
 			}
-			
+
 			return done;
 		};
 
@@ -13061,6 +15969,42 @@
 					this.addMenuItems(menu, ['-', 'addToScratchpad'], null, evt);
 				}
 
+				// Adds a comment on the selected cells for files that
+				// support anchored comments
+				if (graph.getSelectionCount() > 0 && ui.commentsSupported() &&
+					ui.anchoredCommentsSupported() && ui.canComment() &&
+					this.showCommentsWindow != null)
+				{
+					var selected = graph.getSelectionCells();
+					var menus = this;
+
+					menu.addSeparator();
+					menu.addItem(mxResources.get('comment') + '...', null, function()
+					{
+						if (ui.currentPage != null)
+						{
+							var c = null;
+
+							if (selected.length == 1)
+							{
+								c = selected[0].id;
+							}
+							else
+							{
+								c = [];
+
+								for (var i = 0; i < selected.length; i++)
+								{
+									c.push(selected[i].id);
+								}
+							}
+
+							menus.showCommentsWindow(null,
+								{p: ui.currentPage.getId(), c: c});
+						}
+					});
+				}
+
 				if (graph.isSelectionEmpty() && !this.isShowStyleItems())
 				{
 					this.addMenuItems(menu, ['-', 'exitGroup', 'home'], null, evt);
@@ -13170,6 +16114,24 @@
 			this.menus.isShowArrangeItems = this.menus.isShowStyleItems;
 			this.menus.isShowCellEditItems = this.menus.isShowStyleItems;
 		}
+
+		// Loads the comments of the file in the background after it was
+		// opened and keeps the comment icons on the cells up to date
+		var updateCommentOverlays = mxUtils.bind(this, function()
+		{
+			this.updateCommentOverlays();
+		});
+
+		this.addListener('commentsChanged', updateCommentOverlays);
+		this.addListener('darkModeChanged', updateCommentOverlays);
+		this.editor.addListener('pageSelected', updateCommentOverlays);
+
+		this.editor.addListener('fileLoaded', mxUtils.bind(this, function()
+		{
+			// Overlays of the previous file were disposed with its model
+			this.commentOverlays = null;
+			this.refreshCommentCache();
+		}));
 
 		// In passiveScroll mode, override insert point to use context menu location.
 		// Insert actions pass pt=null when there's no mouse insert point, which
@@ -13387,7 +16349,12 @@
 			this.altShiftActions[81] = 'copyStyle'; // Alt+Shift+Q
 			this.altShiftActions[87] = 'pasteStyle'; // Alt+Shift+W
 			this.altShiftActions[83] = 'synchronize'; // Alt+Shift+S
-			
+			this.ctrlAltActions[84] = 'runLastLayout'; // Ctrl+Alt+T
+
+			// Applies custom keyboard shortcuts from the configuration
+			// after the default bindings so that they take precedence
+			this.installKeyboardShortcuts();
+
 			if (urlParams['embedInline'] == '1')
 			{
 				document.body.classList.add('geEmbedInline');
@@ -13532,20 +16499,14 @@
 			var view = this.editor.graph.view;
 			var unit = mxSettings.getUnit();
 			view.setUnit(unit);
+			Editor.pageSizeUnit = unit;
 
-			// Updates page size unit (using mm instead of m)
-			Editor.pageSizeUnit = (unit == mxConstants.METERS) ?
-				mxConstants.MILLIMETERS : unit;
-			
 			view.addListener('unitChanged', function(sender, evt)
 			{
 				var unit = evt.getProperty('unit');
 				mxSettings.setUnit(unit);
 				mxSettings.save();
-				
-				// Updates page size unit (using mm instead of m)
-				Editor.pageSizeUnit = (unit == mxConstants.METERS) ?
-					mxConstants.MILLIMETERS : unit;
+				Editor.pageSizeUnit = unit;
 			});
 
 			var showRuler = Editor.canvasSupported && document.documentMode != 9 &&
@@ -14007,14 +16968,25 @@
 			try
 			{
 				// Automatically updates theme when system setting changes
-				window.matchMedia('(prefers-color-scheme: dark)')
-					.addEventListener('change', mxUtils.bind(this, function (e)
+				var darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+				var darkModeListener = mxUtils.bind(this, function (e)
+				{
+					if (this.isAutoDarkMode())
 					{
-						if (this.isAutoDarkMode())
-						{
-							this.setDarkMode(e.matches);
-						}
-					}));
+						this.setDarkMode(e.matches);
+					}
+				});
+
+				darkModeMediaQuery.addEventListener('change', darkModeListener);
+
+				// The media query outlives this instance so the listener must
+				// be removed or it fires on destroyed instances (eg. after a
+				// lightbox preview was closed)
+				this.destroyFunctions.push(function()
+				{
+					darkModeMediaQuery.removeEventListener('change', darkModeListener);
+				});
 			}
 			catch (e)
 			{
@@ -14038,18 +17010,9 @@
 			this.setHighContrast(true);
 		}
 
-		if (Editor.isSettingsEnabled())
+		if (Editor.isSettingsEnabled() && mxSettings.settings.pages != null)
 		{
-			if (mxSettings.settings.pages != null)
-			{
-				this.setTabContainerVisible(mxSettings.settings.pages);
-			}
-			
-			if (mxSettings.settings.compactMode != null &&
-				this.isDefaultTheme(Editor.currentTheme))
-			{
-				this.setCompactMode(mxSettings.settings.compactMode);
-			}
+			this.setTabContainerVisible(mxSettings.settings.pages);
 		}
 
 		this.installSettings();
@@ -14314,6 +17277,10 @@
 		textInput.contentEditable = true;
 		textInput.innerHTML = '&nbsp;';
 
+		// Exposed so the typing shim can detect when Ctrl/Meta is held
+		// and avoid stealing focus from this clipboard element.
+		this.clipboardElt = textInput;
+
 		var restoreFocus = false;
 		
 		// Disables built-in cut, copy and paste shortcuts
@@ -14365,7 +17332,25 @@
 			{
 				textInput.innerHTML = '&nbsp;';
 				textInput.focus();
-				document.execCommand('selectAll', false, null);
+
+				// Range instead of execCommand('selectAll') - see showTypingShim: avoids
+				// the selectstart that the body/root block cancels (which left no selection).
+				try
+				{
+					var r = document.createRange();
+					r.selectNodeContents(textInput);
+					var s = window.getSelection();
+
+					if (s != null)
+					{
+						s.removeAllRanges();
+						s.addRange(r);
+					}
+				}
+				catch (e)
+				{
+					// ignore
+				}
 			}, 0);
 		};
 		
@@ -14382,14 +17367,17 @@
 					keyCode == 91 /* MetaLeft */ || keyCode == 93 /* MetaRight */))
 				{
 					restoreFocus = false;
-					
+
+					// Remove textInput first so the typing shim's
+					// clipboardElt check sees it as no longer present
+					// and can correctly focus the shim instead.
+					textInput.parentNode.removeChild(textInput);
+
 					if (!graph.isEditing() && this.dialog == null && graph.container != null)
 					{
 						graph.container.focus();
 					}
-					
-					textInput.parentNode.removeChild(textInput);
-					
+
 					// Workaround for lost cursor in focused element
 					if (this.dialog == null)
 					{
@@ -15659,7 +18647,19 @@
 		return this.pages != null && (urlParams['pages'] != '0' ||
 			this.pages.length > 1 || Editor.pagesVisible);
 	};
-	
+
+	/**
+	 * Returns true if the theme menu should be visible.
+	 */
+	EditorUi.prototype.isThemeMenuVisible = function()
+	{
+		// themes=1 shows the menu in embed mode except with a fixed theme,
+		// ie. where the ui or sketch URL parameter overrides the setting
+		return (urlParams['embed'] != '1' || (urlParams['themes'] == '1' &&
+			urlParams['ui'] == null && urlParams['sketch'] != '1')) &&
+			urlParams['extAuth'] != '1' && this.mode != App.MODE_ATLAS;
+	};
+
 	/**
 	 * Overrides image dialog to add image search and Google+.
 	 */
@@ -16267,9 +19267,205 @@
 			mxResources.add(RESOURCE_BASE, null, mxUtils.bind(this, function()
 			{
 				this.spinner.stop();
+				this.updateOfflineLanguages();
+
+				// Dialog texts are static - closes open dialogs so they
+				// reopen in the new language (a dialog with unsaved
+				// changes can veto the close and stops the loop)
+				while (this.dialog != null)
+				{
+					var dlg = this.dialog;
+					this.hideDialog(true);
+
+					if (this.dialog == dlg)
+					{
+						break;
+					}
+				}
+
 				this.fireEvent(new mxEventObject('languageChanged'));
+
+				// The startup flow depends on the splash dialog - reopens
+				// it in the new language instead of leaving no dialog
+				if (this.getCurrentFile() == null &&
+					typeof this.showSplash === 'function')
+				{
+					this.showSplash();
+				}
 			}));
 		}
+	};
+
+	/**
+	 * Scans the service worker precache for language bundles and invokes
+	 * the callback with the sorted language codes and whether the default
+	 * (English) bundle is present.
+	 */
+	EditorUi.prototype.getOfflineLanguages = function(fn)
+	{
+		var done = function(codes, hasDefault)
+		{
+			fn((codes != null) ? codes : [], hasDefault == true);
+		};
+
+		try
+		{
+			if (typeof caches !== 'undefined')
+			{
+				caches.keys().then(function(names)
+				{
+					var scans = [];
+
+					for (var i = 0; i < names.length; i++)
+					{
+						if (names[i].substring(0, 19) == 'workbox-precache-v2')
+						{
+							scans.push(caches.open(names[i]).then(function(cache)
+							{
+								return cache.keys();
+							}));
+						}
+					}
+
+					return Promise.all(scans);
+				}).then(function(results)
+				{
+					var codes = Object.create(null);
+					var hasDefault = false;
+
+					for (var i = 0; i < results.length; i++)
+					{
+						for (var j = 0; j < results[i].length; j++)
+						{
+							var match = /\/resources\/dia(?:_([a-z0-9-]+))?\.txt$/.exec(
+								new URL(results[i][j].url).pathname);
+
+							if (match != null)
+							{
+								if (match[1] != null)
+								{
+									codes[match[1]] = true;
+								}
+								else
+								{
+									hasDefault = true;
+								}
+							}
+						}
+					}
+
+					done(Object.keys(codes).sort(), hasDefault);
+				})['catch'](function()
+				{
+					done(null, false);
+				});
+
+				return;
+			}
+		}
+		catch (e)
+		{
+			// ignore
+		}
+
+		done(null, false);
+	};
+
+	/**
+	 * Scans the service worker precache for language bundles and stores
+	 * which languages are available offline. Asynchronous - the result is
+	 * used by isLanguageAvailableOffline from the next call on.
+	 */
+	EditorUi.prototype.updateOfflineLanguages = function()
+	{
+		this.getOfflineLanguages(mxUtils.bind(this, function(codes, hasDefault)
+		{
+			var available = Object.create(null);
+
+			if (hasDefault)
+			{
+				available['en'] = true;
+			}
+
+			for (var i = 0; i < codes.length; i++)
+			{
+				available[codes[i]] = true;
+			}
+
+			this.offlineLanguages = available;
+		}));
+	};
+
+	/**
+	 * Removes the cached bundle for the given language from the service
+	 * worker precache and invokes the callback when done. The bundle is
+	 * re-downloaded on the next use of that language, and installs stop
+	 * refreshing it (the refresh only covers cached entries).
+	 */
+	EditorUi.prototype.removeOfflineLanguage = function(code, fn)
+	{
+		try
+		{
+			if (typeof caches !== 'undefined' && /^[a-z0-9-]+$/.test(code))
+			{
+				caches.keys().then(function(names)
+				{
+					var deletes = [];
+
+					for (var i = 0; i < names.length; i++)
+					{
+						if (names[i].substring(0, 19) == 'workbox-precache-v2')
+						{
+							deletes.push(caches.open(names[i]).then(function(cache)
+							{
+								return cache.keys().then(function(requests)
+								{
+									return Promise.all(requests.filter(function(req)
+									{
+										return new URL(req.url).pathname.endsWith(
+											'/resources/dia_' + code + '.txt');
+									}).map(function(req)
+									{
+										return cache.delete(req);
+									}));
+								});
+							}));
+						}
+					}
+
+					return Promise.all(deletes);
+				}).then(mxUtils.bind(this, function()
+				{
+					this.updateOfflineLanguages();
+					fn();
+				}))['catch'](function()
+				{
+					fn();
+				});
+
+				return;
+			}
+		}
+		catch (e)
+		{
+			// ignore
+		}
+
+		fn();
+	};
+
+	/**
+	 * Returns true if switching to the given language produces a translated
+	 * UI right now. Bundles are cached by the service worker on first use
+	 * (see GenerateServiceWorker), so while offline only cached bundles -
+	 * and English, which is always precached - are available. Returns true
+	 * when online or without scan results (no service worker, eg. desktop).
+	 */
+	EditorUi.prototype.isLanguageAvailableOffline = function(id)
+	{
+		return navigator.onLine !== false || this.offlineLanguages == null ||
+			this.offlineLanguages['en'] != true || id == '' || id == 'en' ||
+			this.offlineLanguages[id] == true;
 	};
 
 	/**
@@ -16722,6 +19918,62 @@
 		graph.currentVertexStyle = mxUtils.clone(graph.defaultVertexStyle);
 		graph.currentEdgeStyle = mxUtils.clone(graph.defaultEdgeStyle);
 		this.clearDefaultStyle();
+
+		this.restorePersistedEdgeStyle();
+	};
+
+	/**
+	 * Applies the persisted global current edge style (the toolbar dropdown choice for
+	 * new edges) over the theme default, so it survives reloads and theme changes —
+	 * a user who switches new edges to libavoid auto-routing keeps that choice. A theme
+	 * whose edges aren't orthogonal (sketch/simple: curved/none) can't carry libavoid
+	 * routing, so the flag is dropped there. Called on load (init)
+	 * and after every theme rebuild (updateDefaultStyles); clearDefaultStyle (the
+	 * method) leaves the persisted value alone — only the explicit "Clear Default
+	 * Style" action clears it.
+	 *
+	 * The persisted keys are applied ON TOP of the current default instead of
+	 * replacing it, so keys that were added to the default after the style was
+	 * persisted are kept. Replacing it dropped the fonts of a defaultEdgeStyle
+	 * added via Editor.configure (or of a theme switched to later) for every new
+	 * edge and edge label, while vertices still used them.
+	 */
+	EditorUi.prototype.restorePersistedEdgeStyle = function()
+	{
+		var graph = this.editor.graph;
+		var persistedEdgeStyle = (typeof mxSettings !== 'undefined' &&
+			mxSettings.getCurrentEdgeStyle != null) ? mxSettings.getCurrentEdgeStyle() : null;
+
+		if (persistedEdgeStyle != null)
+		{
+			graph.currentEdgeStyle = mxUtils.clone(graph.defaultEdgeStyle);
+
+			// Skips prototype keys as the persisted style comes from local storage
+			for (var key in persistedEdgeStyle)
+			{
+				if (key != '__proto__' && key != 'constructor' && key != 'prototype')
+				{
+					graph.currentEdgeStyle[key] = persistedEdgeStyle[key];
+				}
+			}
+
+			// A persisted fontFamily without a fontSource is a system font, so the
+			// default's fontSource must not survive the merge (see pasteCellStyles)
+			if (persistedEdgeStyle['fontFamily'] != null &&
+				persistedEdgeStyle['fontSource'] == null)
+			{
+				delete graph.currentEdgeStyle['fontSource'];
+			}
+
+			if (graph.defaultEdgeStyle['edgeStyle'] != 'orthogonalEdgeStyle')
+			{
+				delete graph.currentEdgeStyle['libavoidRouting'];
+			}
+
+			// Refresh the toolbar/format UI to reflect the restored style (no force,
+			// so the styleChanged save-listener does not re-persist it).
+			this.fireEvent(new mxEventObject('styleChanged', 'keys', [], 'values', [], 'cells', []));
+		}
 	};
 
 	/**
@@ -16770,9 +20022,43 @@
 			{
 				var link = JSON.parse(href.substring(17));
 
-				if (link != null && link.title != null)
+				// Mirrors LinkDialog.updateActionSummary so the link
+				// hint, link-icon tooltip, and Edit Link dialog all
+				// agree on the visible label. Resolution order:
+				//   1. User-supplied `title` on the custom action.
+				//   2. "Effects (N)" for animation-wrapper payloads.
+				//   3. Localized label of the first action key via
+				//      `CustomActionDialog.SCHEMAS[key]`.
+				//   4. Fallback to the generic "Action" string.
+				if (link != null &&
+					typeof link.title == 'string' &&
+					link.title.trim() != '')
 				{
-					result = link.title;
+					result = link.title.trim();
+				}
+				else if (link != null && Array.isArray(link.actions) &&
+					link.actions.length > 0)
+				{
+					var first = Object.keys(link.actions[0])[0] || '';
+
+					if (first == 'animation' &&
+						link.actions[0].animation != null &&
+						Array.isArray(link.actions[0].animation.steps))
+					{
+						var sc = link.actions[0].animation.steps.length;
+						result = mxResources.get('effects') + ' (' + sc + ')';
+					}
+					else if (first != '')
+					{
+						var schema = (typeof CustomActionDialog !=
+							'undefined' && CustomActionDialog != null) ?
+							CustomActionDialog.SCHEMAS[first] : null;
+						var fallback = (schema != null) ?
+							schema.label : first;
+						var resKey = (schema != null && schema.labelKey) ?
+							schema.labelKey : first;
+						result = mxResources.get(resKey, null, fallback);
+					}
 				}
 			}
 			catch (e)
@@ -16860,18 +20146,6 @@
 			this.addListener('customFontsChanged', mxUtils.bind(this, function(sender, evt)
 			{
 				mxSettings.setCustomFonts(this.menus.customFonts);
-				mxSettings.save();
-			}));
-			
-			/**
-			 * Persists copy on connect switch.
-			 */
-			graph.connectionHandler.setCreateTarget(mxSettings.isCreateTarget());
-			this.fireEvent(new mxEventObject('copyConnectChanged'));
-			
-			this.addListener('copyConnectChanged', mxUtils.bind(this, function(sender, evt)
-			{
-				mxSettings.setCreateTarget(graph.connectionHandler.isCreateTarget());
 				mxSettings.save();
 			}));
 			
@@ -17024,13 +20298,13 @@
 	 */
 	EditorUi.prototype.writeTextToClipboard = function(text, error, done)
 	{
-		navigator.clipboard.writeText(text)['catch'](error).then(function()
+		navigator.clipboard.writeText(text).then(function()
 		{
 			if (done != null)
 			{
 				done();
 			}
-		});
+		})['catch'](error);
 	};
 
 	/**
@@ -17044,7 +20318,8 @@
 			{
 				var graph = this.editor.graph;
 				var svgRoot = graph.getSvg(null, scale, null, null, null, null,
-					null, null, null, null, null, null, null,
+					null, null, null, null, null,
+					(Editor.isDarkMode()) ? 'dark' : 'light', null,
 					(cells.length > 0) ? cells : null);
 
 				if (xml != null)
@@ -17122,7 +20397,8 @@
 					this.handleError(e);
 				}), null, null, scale, this.editor.graph.background == null ||
 					this.editor.graph.background == mxConstants.NONE,
-					null, null, null, 10, null, null, false, null,
+					null, null, null, 10, null, null,
+					(Editor.isDarkMode()) ? 'dark' : 'light', null,
 					(cells.length > 0) ? cells : null);
 			}
 		}
@@ -17358,7 +20634,7 @@
 				else if (plain != null && plain.length > 0)
 				{
 					elt = document.createElement('div');
-					mxUtils.setTextContent(elt, data);
+					mxUtils.setTextContent(elt, plain);
 				}
 			}
 			
@@ -17512,8 +20788,23 @@
 					{
 						if (xml.substring(0, 20).replace(/\s/g, '').indexOf('{"isProtected":') == 0)
 						{
+							var unavailable = mxUtils.bind(this, function()
+							{
+								this.handleError({message: mxResources.get('serviceUnavailableOrBlocked')});
+							});
+
 							var delayed = mxUtils.bind(this, function ()
 							{
+								// The script tag fires onload for any 200 response, so hosts
+								// that answer with an SPA fallback instead of the bundle load
+								// without an error and leave MiroImporter undefined
+								if (typeof MiroImporter === 'undefined')
+								{
+									unavailable();
+
+									return;
+								}
+
 								try
 								{
 									var miro = new MiroImporter();
@@ -17528,7 +20819,10 @@
 
 							if (typeof MiroImporter === 'undefined')
 							{
-								mxscript('js/diagramly/miro/MiroImporter.js', delayed);
+								// MiroImporter ships in extensions.min.js, the raw source
+								// under js/diagramly is not served on all hosts
+								mxscript(window.DRAWIO_SERVER_URL + 'js/extensions.min.js',
+									delayed, null, null, null, unavailable);
 							}
 							else
 							{
@@ -18156,11 +21450,14 @@
 			var x0 = 0;
 			var y0 = 0;
 
+			// No rounding of the page size so that the printed page grid stays
+			// aligned with the page breaks on the canvas (getPageLayout uses
+			// the exact page size, page formats may be fractional)
 			var pf = mxRectangle.fromRectangle(thisGraph.pageFormat);
 			var autoOrigin = args.fit || args.crop || !thisGraph.pageVisible;
 			var temp = args.scale;
-			pf.width = Math.ceil(pf.width * thisGraph.pageScale);
-			pf.height = Math.ceil(pf.height * thisGraph.pageScale);
+			pf.width = pf.width * thisGraph.pageScale;
+			pf.height = pf.height * thisGraph.pageScale;
 			var scale = 1;
 
 			if (args.fit)
@@ -18208,11 +21505,44 @@
 				pf.height = (gb.height + 1) * scale / thisGraph.view.scale;
 			}
 
-			pf.width = Math.ceil(pf.width * printScale);
-			pf.height = Math.ceil(pf.height * printScale);
+			pf.width = pf.width * printScale;
+			pf.height = pf.height * printScale;
 			var anchorId = (pageId != null) ? 'page/id,' + pageId : null;
 
-			if (pv == null)
+			// Computes the number of pages in the output the same way as
+			// mxPrintPreview.open and stops the output if the total exceeds
+			// maxPrintPageCount, so that extreme cell coordinates cannot
+			// block the UI with an excessive number of pages
+			var pb = (args.selection) ? thisGraph.getBoundingBox(
+				thisGraph.getSelectionCells()) : thisGraph.getGraphBounds();
+
+			if (pb != null)
+			{
+				var psc = thisGraph.view.scale / scale;
+				var pbw = pb.width;
+				var pbh = pb.height;
+				var px0 = x0;
+				var py0 = y0;
+
+				if (!autoOrigin)
+				{
+					px0 -= thisGraph.view.translate.x * scale;
+					py0 -= thisGraph.view.translate.y * scale;
+					pbw += pb.x;
+					pbh += pb.y;
+				}
+
+				printPageCount += Math.max(1, Math.ceil((pbw / psc + px0) / (pf.width + 1))) *
+					Math.max(1, Math.ceil((pbh / psc + py0) / (pf.height + 1)));
+			}
+
+			tooManyPages = tooManyPages || printPageCount > this.maxPrintPageCount;
+
+			if (tooManyPages)
+			{
+				// Skips the output, view state is restored below
+			}
+			else if (pv == null)
 			{
 				pv = PrintDialog.createPrintPreview(thisGraph, scale, null, border, x0, y0, autoOrigin);
 				pv.title = this.getBaseFilename(true);
@@ -18235,7 +21565,7 @@
 					if (!args.shadows)
 					{
 						css += 'g[style*="filter: drop-shadow("] {\n' +
-							'  filter: none !important;{\n' +
+							'  filter: none !important;\n' +
 							'}\n';
 					}
 
@@ -18271,8 +21601,8 @@
 						{
 							doc.writeln('<style type="text/css">');
 							doc.writeln('@font-face {\n' +
-								'font-family: "' + mxUtils.htmlEntities(fontName) + '";\n' + 
-								'src: url("' + mxUtils.htmlEntities(fontUrl) + '");\n}');
+								'font-family: "' + mxUtils.htmlEntities(Graph.escapeCssString(fontName)) + '";\n' +
+								'src: url("' + mxUtils.htmlEntities(Graph.escapeCssString(fontUrl)) + '");\n}');
 							doc.writeln('</style>');
 						}
 					}
@@ -18410,15 +21740,15 @@
 						if (Graph.isCssFontUrl(fontUrl))
 						{
 							pv.wnd.document.writeln('<link rel="stylesheet" href="' +
-								mxUtils.htmlEntities(fontUrl) +
+								mxUtils.htmlEntities(Graph.rewriteGoogleFontUrl(fontUrl)) +
 								'" charset="UTF-8" type="text/css">');
 						}
 						else
 						{
 							pv.wnd.document.writeln('<style type="text/css">');
 							pv.wnd.document.writeln('@font-face {\n' +
-								'font-family: "' + mxUtils.htmlEntities(fontName) + '";\n' + 
-								'src: url("' + mxUtils.htmlEntities(fontUrl) + '");\n}');
+								'font-family: "' + mxUtils.htmlEntities(Graph.escapeCssString(fontName)) + '";\n' +
+								'src: url("' + mxUtils.htmlEntities(Graph.escapeCssString(fontUrl)) + '");\n}');
 							pv.wnd.document.writeln('</style>');
 						}
 					}
@@ -18441,6 +21771,8 @@
 		var pagesFrom = args.pagesFrom;
 		var pagesTo = args.pagesTo;
 		var ignorePages = !args.allPages;
+		var printPageCount = 0;
+		var tooManyPages = false;
 		var pv = null;
 
 		if (EditorUi.isElectronApp)
@@ -18468,7 +21800,7 @@
 				imax = parseInt(pagesTo) - 1;
 			}
 			
-			for (var i = i0; i <= imax; i++)
+			for (var i = i0; i <= imax && !tooManyPages; i++)
 			{
 				var page = this.pages[i];
 				var tempGraph = (page == this.currentPage) ? graph : null;
@@ -18584,7 +21916,19 @@
 		{
 			pv = printGraph(graph);
 		}
-		
+
+		if (tooManyPages)
+		{
+			if (pv != null && pv.wnd != null && pv.wnd != window)
+			{
+				pv.wnd.close();
+			}
+
+			this.handleError({message: mxResources.get('drawingTooLarge')});
+
+			return null;
+		}
+
 		if (pv == null || pv.wnd == null)
 		{
 			this.handleError({message: mxResources.get('errorUpdatingPreview')});
@@ -18755,27 +22099,16 @@
 												this.openLocalFile(xml, null, true);
 											}
 										}
-										else if (this.isRemoteFileFormat(data))
+										else if (this.isGliffyData(data))
 										{
-											if (this.isOffline())
+											this.importGliffy(data, mxUtils.bind(this, function(xml)
 											{
-												this.showError(mxResources.get('error'), mxResources.get('notInOffline'));
-											}
-											else
+												this.openLocalFile(xml, null, true);
+											}), mxUtils.bind(this, function(err)
 											{
-												new mxXmlRequest(OPEN_URL, 'format=xml&data=' + encodeURIComponent(data)).send(mxUtils.bind(this, function(req)
-												{
-													if (req.getStatus() >= 200 && req.getStatus() <= 299)
-													{
-														this.openLocalFile(req.getText(), null, true);
-													}
-													else
-													{
-														this.showError(mxResources.get('error'), req.getStatus() == 413? mxResources.get('diagramTooLarge') :
-																			mxResources.get('unknownError'));
-													}
-												}));
-											}
+												this.showError(mxResources.get('error'), (err != null && err.status == 413) ? mxResources.get('diagramTooLarge') :
+													mxResources.get('unknownError'));
+											}));
 										}
 										else if (/^https?:\/\//.test(data))
 										{
@@ -18962,35 +22295,19 @@
 					handleResult(xml);
 				}));
 			}
-			else if (Graph.fileSupport && new XMLHttpRequest().upload &&
-				this.isRemoteFileFormat(data, name))
+			else if (Graph.fileSupport && this.isGliffyData(data, name))
 			{
-				if (this.isOffline())
+				this.importGliffy(data, mxUtils.bind(this, function(xml)
 				{
 					this.spinner.stop();
-					this.showError(mxResources.get('error'), mxResources.get('notInOffline'));
-				}
-				else
+					handleResult(xml);
+				}), mxUtils.bind(this, function(err)
 				{
-					this.parseFile(file, mxUtils.bind(this, function(xhr)
-					{
-						if (xhr.readyState == 4)
-						{
-							this.spinner.stop();
-							
-							if (xhr.status >= 200 && xhr.status <= 299)
-							{
-								handleResult(xhr.responseText);
-							}
-							else
-							{
-								this.handleError({message: mxResources.get((xhr.status == 413) ?
-									'drawingTooLarge' : 'invalidOrMissingFile')},
-									mxResources.get('errorLoadingFile'));
-							}
-						}
-					}));
-				}
+					this.spinner.stop();
+					this.handleError({message: mxResources.get((err != null && err.status == 413) ?
+						'drawingTooLarge' : 'invalidOrMissingFile')},
+						mxResources.get('errorLoadingFile'));
+				}), name);
 			}
 			else if (this.isLucidChartData(data))
 			{
@@ -19302,6 +22619,52 @@
 	};
 	
 	/**
+	 * Restores the current page's stored initial view (DiagramPage.getViewBox)
+	 * if present, otherwise falls back to the default initialFitDiagram. The
+	 * authored zoom is preserved and the view is centred on the captured
+	 * region; the scale is only reduced when the region does not fit the
+	 * current window (never increased), so the same view reproduces across
+	 * window sizes. Used by the fitDiagramOnLoad / fitDiagramOnPage paths.
+	 */
+	EditorUi.prototype.fitInitialView = function(maxScale)
+	{
+		var graph = this.editor.graph;
+		var page = this.currentPage;
+		var vb = (page != null) ? page.getViewBox() : null;
+		var container = graph.container;
+
+		// Requires a laid-out container; otherwise the scale math below would
+		// divide by a zero client size and zoom to 0.
+		if (vb != null && container.clientWidth > 0 && container.clientHeight > 0)
+		{
+			var cw = container.clientWidth;
+			var ch = container.clientHeight;
+
+			// Scale at which the whole captured region fits. The stored scale
+			// (authored zoom) is preserved and only clamped down to this when
+			// the region is too large for the current window.
+			var fitScale = Math.min(cw / vb.width, ch / vb.height);
+			var scale = (vb.scale != null) ? Math.min(vb.scale, fitScale) : fitScale;
+
+			graph.zoomTo(scale, null, null, mxUtils.hasScrollbars(container));
+
+			if (mxUtils.hasScrollbars(container))
+			{
+				// Centres the captured region in the viewport (same math as
+				// Graph.fitWindow, but with our preserved scale).
+				var t = graph.view.translate;
+				var s = graph.view.scale;
+				container.scrollLeft = (vb.x + vb.width / 2 + t.x) * s - cw / 2;
+				container.scrollTop = (vb.y + vb.height / 2 + t.y) * s - ch / 2;
+			}
+		}
+		else
+		{
+			this.initialFitDiagram(maxScale);
+		}
+	};
+
+	/**
 	 * Shows the layers dialog if the graph has more than one layer.
 	 */
 	EditorUi.prototype.initializeEmbedMode = function()
@@ -19339,7 +22702,7 @@
 					// Fits diagram to window
 					if (Editor.fitDiagramOnLoad)
 					{
-						this.initialFitDiagram();
+						this.fitInitialView();
 					}
 					
 					// TODO: Check if cellsInserted should be fired instead here
@@ -19539,8 +22902,675 @@
 	};
 	
 	/**
+	 * Resolves once isReady() returns true. The elk/mermaid bundles load
+	 * asynchronously (see App.main / bootstrap.js / Devel.js), so a layout or
+	 * mermaid request can arrive before the bundle that handles it is ready.
+	 * Calls success() immediately if already ready, otherwise polls briefly
+	 * before giving up via the optional error().
+	 */
+	EditorUi.prototype.whenScriptReady = function(isReady, success, error)
+	{
+		if (isReady())
+		{
+			success();
+			return;
+		}
+
+		var attempts = 0;
+
+		var timer = window.setInterval(function()
+		{
+			if (isReady())
+			{
+				window.clearInterval(timer);
+				success();
+			}
+			else if (++attempts >= 100) // ~10s at 100ms
+			{
+				window.clearInterval(timer);
+
+				if (error != null)
+				{
+					error();
+				}
+			}
+		}, 100);
+	};
+
+	/**
+	 * The most recently executed layout as a custom-layout array (as accepted
+	 * by Graph.createLayouts). Recorded by executeLayoutSpec, ElkLayout.run,
+	 * LibavoidRouting.run and the custom layout dialog; replayed by the
+	 * Arrange > Layout > Run Last Layout menu item, which is grayed out
+	 * while this is null.
+	 */
+	EditorUi.prototype.lastLayoutSpec = null;
+
+	/**
+	 * Resolves a layout spec into a custom-layout array as accepted by
+	 * Graph.createLayouts ([{layout, config}, ...] — the format used by the
+	 * Layout dialog; see the JSON layout specification). The spec is either:
+	 *
+	 *   - a custom-layout array, returned as given,
+	 *   - a JSON string starting with '[' (as passed on the command line),
+	 *   - the libavoid shorthand ('libavoid', or its technical layout name
+	 *     'orthogonalEdge') for orthogonal edge routing,
+	 *   - 'parallels' (mxParallelEdgeLayout with the Arrange > Layout >
+	 *     Parallels defaults), or
+	 *   - an ElkLayout.MENU_PRESETS preset name (verticalFlow, horizontalFlow,
+	 *     verticalTree, horizontalTree, radialTree, organic — the Arrange >
+	 *     Layout menu presets), resolved with the menu's canonical edge
+	 *     treatment. Requires the ELK bundle to be loaded.
+	 *
+	 * Returns null for unknown specs and throws on invalid JSON. This is the
+	 * single resolver behind the desktop --layout CLI flag, the embed "layout"
+	 * action, the #create hash / load "layout" option (all via
+	 * executeLayoutSpec) and the CSV import's # layout line (via doImportCsv).
+	 */
+	EditorUi.prototype.resolveLayoutList = function(spec)
+	{
+		if (typeof spec === 'string')
+		{
+			spec = mxUtils.trim(spec);
+
+			if (spec.charAt(0) == '[')
+			{
+				return JSON.parse(spec);
+			}
+			else if (typeof LibavoidRouting !== 'undefined' &&
+				(spec === LibavoidRouting.SHORTHAND ||
+				spec === LibavoidRouting.LAYOUT_NAME))
+			{
+				return [{layout: LibavoidRouting.LAYOUT_NAME}];
+			}
+			else if (spec === 'parallels')
+			{
+				return [{layout: 'mxParallelEdgeLayout',
+					config: {checkOverlap: true}}];
+			}
+			else if (typeof ElkLayout !== 'undefined' &&
+				ElkLayout.MENU_PRESETS != null &&
+				ElkLayout.MENU_PRESETS[spec] != null)
+			{
+				var preset = ElkLayout.MENU_PRESETS[spec];
+
+				// The canonical edge MODE (strict orthogonalEdgeStyle) is
+				// layered-only: mrtree wants mode 'auto' (explicit strict
+				// renders badly on tree channels — same choice as the Insert >
+				// Layout tree containers) and radial/organic want straight
+				// spokes, which the pinned 'orthogonal' mode used to break
+				// with an orthogonal=1 stamp. Non-layered presets take only
+				// the corners half (no visual effect on straight spokes).
+				var edge = (preset.algorithm === 'layered') ?
+					ElkLayout.CANONICAL_EDGE :
+					{corners: (ElkLayout.CANONICAL_EDGE || {}).corners};
+
+				return [{layout: Graph.elkLayoutNameForAlgorithm(preset.algorithm),
+					config: Graph.elkOptionsToConfig(preset.options, edge)}];
+			}
+
+			return null;
+		}
+
+		return (typeof spec === 'object') ? spec : null;
+	};
+
+	/**
+	 * Returns the layout container to retarget when the user runs a layout,
+	 * or null: the selection must be exactly one vertex whose style carries
+	 * a replaceable childLayout (the Insert > Layout and Advanced-sidebar
+	 * layout boxes, or the legacy tree/flow/circle/organic containers).
+	 * Structural childLayouts (tables, stacks/pools, racks) are never
+	 * replaced by a layout run.
+	 */
+	EditorUi.prototype.getSelectedLayoutContainer = function()
+	{
+		var graph = this.editor.graph;
+		var cell = (graph.getSelectionCount() == 1) ?
+			graph.getSelectionCell() : null;
+
+		if (cell != null && graph.model.isVertex(cell))
+		{
+			var childLayout = graph.getCellStyle(cell)['childLayout'];
+
+			if (childLayout != null && childLayout != 'tableLayout' &&
+				childLayout != 'stackLayout' && childLayout != 'rack')
+			{
+				return cell;
+			}
+		}
+
+		return null;
+	};
+
+	/**
+	 * Rewrites the childLayout style of the given layout container to the
+	 * given spec — a custom-layout array (see resolveLayoutList) or a raw
+	 * childLayout value like 'circleLayout' — so running a layout with a
+	 * single layout container selected replaces the container's layout
+	 * instead of running once (see the callers: ElkLayout.run,
+	 * LibavoidRouting.run, the circle and parallels menu items, the custom
+	 * layout dialog and executeLayoutSpec). The style change makes the
+	 * layout manager run the new layout in the same undoable edit; writing
+	 * an unchanged value produces no model change, so the layout is re-run
+	 * explicitly to keep the gesture from being a no-op. Throws for specs
+	 * that cannot be written (non-arrays, unknown or container-unsafe
+	 * layout names, values that would corrupt the style string).
+	 */
+	EditorUi.prototype.setContainerChildLayout = function(cell, spec)
+	{
+		var graph = this.editor.graph;
+		var value = spec;
+		var groupPadding = null;
+		var corners = null;
+
+		if (typeof spec !== 'string')
+		{
+			// A non-array (or empty) spec would serialize to a childLayout
+			// that silently kills the container's live layout.
+			if (!Array.isArray(spec) || spec.length == 0)
+			{
+				throw new Error('Invalid layout list: ' + JSON.stringify(spec));
+			}
+
+			var list = [];
+
+			for (var i = 0; i < spec.length; i++)
+			{
+				var entry = spec[i];
+
+				// Not container-safe: mxRadialTreeLayout ignores the parent
+				// frame and crashes on delete-triggered re-runs (the reason
+				// radial containers had to wait for ELK), and mxOrgChartLayout
+				// only exists after loadOrgChartLayouts, so a persisted
+				// reference is dead in the next session. mxFastOrganicLayout
+				// seeds coincident cells with Math.random and restarts its
+				// force sim from the current positions, so every manager
+				// re-run rescrambles the diagram (never converges — use
+				// elkOrganic instead). mxCircleLayout as JSON misses the
+				// getLayout branch's transparent anchor / moveCircle handling
+				// that the raw 'circleLayout' string gets, so it re-plants the
+				// ring by a constant offset on every run (unbounded drift) —
+				// container circle layouts must go through that string form.
+				if (entry != null && (entry.layout == 'mxRadialTreeLayout' ||
+					entry.layout == 'mxOrgChartLayout' ||
+					entry.layout == 'mxFastOrganicLayout' ||
+					entry.layout == 'mxCircleLayout'))
+				{
+					throw new Error('Not supported as childLayout: ' + entry.layout);
+				}
+
+				if (entry != null && Graph.elkLayoutAlgorithms[entry.layout] != null)
+				{
+					var config = {};
+
+					for (var key in entry.config)
+					{
+						config[key] = entry.config[key];
+					}
+
+					// The container itself is the layout root, so the dialog's
+					// selection-as-root cell ids make no sense here (and cell
+					// ids don't belong in a persistent style).
+					delete config.rootCellIds;
+
+					// Preserve-origin is a one-shot-run concept (anchor at the
+					// content's position before this gesture): transparent
+					// containers anchor unconditionally anyway, and a
+					// non-transparent container must keep re-packing to its
+					// padding origin or the resizeLayoutRoot frame stops
+					// hugging the content.
+					delete config.preserveOrigin;
+
+					// Container-critical defaults, matching Menus.layoutContainers
+					// (explicit values win): pin node sizes so a manual resize
+					// isn't overwritten by the next re-run, keep the frame hugging
+					// the content if transparentBounds is toggled off, and keep
+					// isolated cells in the layered input — the extracted
+					// stack-above placement never converges under the manager.
+					if (config.resizeNodes == null)
+					{
+						config.resizeNodes = false;
+					}
+
+					if (config.resizeLayoutRoot == null)
+					{
+						config.resizeLayoutRoot = true;
+					}
+
+					if (entry.layout == 'elkLayered' && config.extractIsolated == null)
+					{
+						config.extractIsolated = false;
+					}
+
+					// The manager's re-runs are deliberately non-enforcing for
+					// corners (enforceCorners=false in initLayoutManager — a
+					// user's per-edge rounded/curved choice survives ordinary
+					// edits), so setting a corners config here would only affect
+					// edges without an explicit choice. Remember it for the
+					// one-shot re-theme below — this gesture explicitly picks
+					// the look, and existing edges must follow it.
+					if (config.corners != null)
+					{
+						corners = config.corners;
+					}
+
+					// The bridge's precedence is cell style > run option, and a
+					// transparentBounds container derives its rendered box from
+					// the style alone — a groupPadding that only lives in the
+					// config would be inert for the container itself. Mirror it
+					// into the container's style below (kept in the config too:
+					// harmless there, and it still covers nested compounds
+					// without their own style).
+					if (config.groupPadding != null)
+					{
+						groupPadding = String(config.groupPadding);
+
+						if (/[;=]/.test(groupPadding))
+						{
+							// Would terminate the key or corrupt the value in the
+							// key=value; style string.
+							throw new Error('Invalid groupPadding: ' + groupPadding);
+						}
+					}
+
+					entry = {layout: entry.layout, config: config};
+				}
+
+				list.push(entry);
+			}
+
+			// Validates the list (throws for unknown layout names) so a spec
+			// the layout manager cannot build is never written into the style.
+			graph.createLayouts(list);
+			value = Graph.encodeChildLayout(list);
+		}
+
+		if (value.indexOf(';') >= 0)
+		{
+			// A ';' would terminate the childLayout key and corrupt the style.
+			// Encoded lists can't contain one — this guards the raw string
+			// path ('circleLayout' and friends).
+			throw new Error('Invalid childLayout: ' + value);
+		}
+
+		graph.model.beginUpdate();
+		try
+		{
+			var style = graph.model.getStyle(cell);
+			graph.setCellStyles('childLayout', value, [cell]);
+
+			if (groupPadding != null)
+			{
+				graph.setCellStyles('groupPadding', groupPadding, [cell]);
+			}
+
+			// One-shot corners re-theme for this explicit gesture, in the
+			// same edit as the spec write (converged edges produce no model
+			// change). The applyCorners guard keeps a stale vendored bundle
+			// from breaking the gesture — the spec still applies, only the
+			// re-theme is skipped.
+			if (corners != null && typeof ElkLayout !== 'undefined' &&
+				typeof ElkLayout.applyCorners === 'function')
+			{
+				ElkLayout.applyCorners(graph, cell, corners);
+			}
+
+			// The style change triggers the layout manager, which runs the new
+			// layout inside this edit (or schedules it if it cannot run sync).
+			// An unchanged value produces no change to react to — re-run the
+			// container's layout explicitly so the action always takes effect.
+			// If that run writes changes (out-of-sync container), the manager
+			// re-runs once more at endUpdate; the second run converges to an
+			// empty write set, while the common converged case stays a clean
+			// no-op (no undo step, no modified flag).
+			if (graph.model.getStyle(cell) == style && graph.layoutManager != null)
+			{
+				graph.layoutManager.executeLayout(cell, false);
+			}
+		}
+		finally
+		{
+			graph.model.endUpdate();
+		}
+	};
+
+	/**
+	 * Runs a layout given as a single spec — see resolveLayoutList for the
+	 * accepted formats. Shared by the desktop --layout CLI flag, the embed
+	 * "layout" action and the #create hash / load "layout" option. Waits for
+	 * the ELK bundle to load before running, records the layout for Arrange >
+	 * Layout > Run Last Layout and invokes the optional done callback once
+	 * the layout has been applied. retargetSelection lets a single selected
+	 * layout container take the spec as its new childLayout (Run Last
+	 * Layout); the programmatic callers omit it — a host-triggered
+	 * whole-page run must not be hijacked by a transient user selection.
+	 */
+	EditorUi.prototype.executeLayoutSpec = function(spec, done, retargetSelection)
+	{
+		var editorUi = this;
+
+		// The ELK bundle may still be loading when a layout is requested -
+		// wait for it before resolving (preset names and elk* layouts both
+		// need it).
+		this.whenScriptReady(function()
+		{
+			return typeof ElkLayout !== 'undefined' && ElkLayout.MENU_PRESETS != null;
+		}, function()
+		{
+			try
+			{
+				var list = editorUi.resolveLayoutList(spec);
+
+				if (list != null)
+				{
+					editorUi.lastLayoutSpec = list;
+
+					// A single selected layout container takes the spec as its
+					// new childLayout instead of a one-shot run (same rule as
+					// the Arrange > Layout menu items).
+					var container = (retargetSelection) ?
+						editorUi.getSelectedLayoutContainer() : null;
+
+					if (container != null && Array.isArray(list) &&
+						list.length > 0)
+					{
+						editorUi.setContainerChildLayout(container, list);
+
+						if (done != null)
+						{
+							done();
+						}
+					}
+					else
+					{
+						// Same path as the custom layout dialog's Apply (sequence +
+						// options), minus the selection scoping (lay out the whole page).
+						editorUi.executeLayouts(editorUi.editor.graph.createLayouts(list), done);
+					}
+				}
+				else
+				{
+					editorUi.handleError(new Error('Unknown layout: ' + spec));
+				}
+			}
+			catch (e)
+			{
+				editorUi.handleError(e);
+			}
+		}, function()
+		{
+			editorUi.handleError(new Error(mxResources.get('serviceUnavailableOrBlocked')));
+		});
+	};
+
+	/**
+	 * Runs the layouts defined in the diagram's childLayout styles via
+	 * Graph.executeAllChildLayouts (nested children before their parents) and
+	 * invokes the optional done callback. Used by the #create hash's
+	 * applyLayouts option — the layout manager only runs childLayouts when
+	 * the model changes, so a freshly opened file keeps its stored positions
+	 * unless they are applied explicitly. ELK layouts in JSON childLayout
+	 * specs need the elk bundle, which loads asynchronously — wait for it
+	 * like executeLayoutSpec does, but only when such a spec is present, so
+	 * diagrams with legacy string layouts (flowLayout, treeLayout, …) stay
+	 * independent of the bundle. After the wait times out the layouts still
+	 * run best-effort: the legacy layouts apply and the ELK containers are
+	 * skipped (with a console error from the layout manager).
+	 */
+	EditorUi.prototype.applyChildLayouts = function(done)
+	{
+		var graph = this.editor.graph;
+
+		var run = function()
+		{
+			try
+			{
+				graph.executeAllChildLayouts();
+			}
+			catch (e)
+			{
+				// A broken childLayout (unknown layout name, container-unsafe
+				// layout) must not abort the caller's flow — done still runs,
+				// like the layout manager's own error handling in getLayout.
+				if (window.console != null)
+				{
+					console.error(e);
+				}
+			}
+
+			if (done != null)
+			{
+				done();
+			}
+		};
+
+		var needsElk = function()
+		{
+			if (typeof ElkLayout !== 'undefined')
+			{
+				return false;
+			}
+
+			var cells = graph.getChildLayoutCells();
+
+			for (var i = 0; i < cells.length; i++)
+			{
+				try
+				{
+					var list = Graph.decodeChildLayout(
+						graph.getCellStyle(cells[i])['childLayout']);
+
+					for (var j = 0; list != null && j < list.length; j++)
+					{
+						if (list[j] != null && typeof Graph.elkLayoutAlgorithms[
+							list[j].layout] === 'string')
+						{
+							return true;
+						}
+					}
+				}
+				catch (e)
+				{
+					// Malformed childLayout — the layout manager skips it too
+				}
+			}
+
+			return false;
+		};
+
+		if (needsElk())
+		{
+			this.whenScriptReady(function()
+			{
+				return typeof ElkLayout !== 'undefined';
+			}, run, run);
+		}
+		else
+		{
+			run();
+		}
+	};
+
+	/**
 	 * Adds the buttons for embedded mode.
 	 */
+	/**
+	 * Installs a capture-phase keydown listener that forwards the host-configured
+	 * pass-through chords (Editor.passThroughKeys) to the embedding app and
+	 * suppresses draw.io's own handling of them. Each entry is
+	 * {key, ctrl, shift, alt, command}; on a match draw.io posts
+	 * {event: 'shortcut', command} to the embed message source. Lets a host
+	 * reclaim shortcuts (e.g. Ctrl+P) even across a cross-origin iframe, where it
+	 * cannot inject its own key listener.
+	 */
+	EditorUi.prototype.installPassThroughKeys = function()
+	{
+		if (Editor.passThroughKeys == null || this.passThroughKeysListener != null)
+		{
+			return;
+		}
+
+		this.passThroughKeysListener = mxUtils.bind(this, function(evt)
+		{
+			var keys = Editor.passThroughKeys;
+			var mod = evt.ctrlKey || evt.metaKey;
+			var key = (evt.key != null) ? evt.key.toLowerCase() : '';
+
+			for (var i = 0; i < keys.length; i++)
+			{
+				var s = keys[i];
+
+				if (key === String(s.key).toLowerCase() && mod === !!s.ctrl &&
+					evt.shiftKey === !!s.shift && evt.altKey === !!s.alt)
+				{
+					evt.preventDefault();
+					evt.stopImmediatePropagation();
+
+					if (s.command != null)
+					{
+						var parent = this.embedMessageSource || window.opener || window.parent;
+						parent.postMessage(JSON.stringify({event: 'shortcut',
+							command: s.command}), '*');
+					}
+
+					return;
+				}
+			}
+		});
+
+		// Capture phase on window so it runs before draw.io's own (bubble-phase)
+		// key handlers and can suppress them.
+		window.addEventListener('keydown', this.passThroughKeysListener, true);
+	};
+
+	/**
+	 * Display names for key codes without a printable character, used for
+	 * the menu shortcut hints of custom keyboard shortcuts.
+	 */
+	EditorUi.keyNames = {
+		8: 'Backspace', 9: 'Tab', 13: 'Enter', 32: 'Space',
+		33: 'PageUp', 34: 'PageDown', 35: 'End', 36: 'Home',
+		37: 'Left', 38: 'Up', 39: 'Right', 40: 'Down',
+		45: 'Insert', 46: 'Delete', 107: '+', 109: '-',
+		112: 'F1', 113: 'F2', 114: 'F3', 115: 'F4', 116: 'F5',
+		117: 'F6', 118: 'F7', 119: 'F8', 120: 'F9', 121: 'F10',
+		122: 'F11', 123: 'F12', 187: '+', 189: '-'
+	};
+
+	/**
+	 * Installs the custom keyboard shortcuts from the configuration
+	 * (Editor.keyboardShortcuts, set via Editor.configure). Each entry is
+	 * {keyCode, control, shift, alt, action} where keyCode is a JavaScript
+	 * key code or a single character, and action the name of an entry in
+	 * EditorUi.actions, or null to remove an existing binding for the
+	 * given key. Custom bindings override the default bindings.
+	 */
+	EditorUi.prototype.installKeyboardShortcuts = function()
+	{
+		if (Editor.keyboardShortcuts != null)
+		{
+			for (var i = 0; i < Editor.keyboardShortcuts.length; i++)
+			{
+				this.installKeyboardShortcut(Editor.keyboardShortcuts[i]);
+			}
+		}
+	};
+
+	/**
+	 * Installs a single custom keyboard shortcut, see
+	 * EditorUi.installKeyboardShortcuts for the entry format.
+	 */
+	EditorUi.prototype.installKeyboardShortcut = function(entry)
+	{
+		var isChar = typeof entry.keyCode === 'string' && entry.keyCode.length == 1;
+		var code = (isChar) ? entry.keyCode.toUpperCase().charCodeAt(0) :
+			parseInt(entry.keyCode);
+
+		if (isNaN(code))
+		{
+			EditorUi.debug('Configuration Error: Invalid keyCode for keyboardShortcuts', entry);
+
+			return;
+		}
+
+		if (entry.alt)
+		{
+			var actions = (entry.control) ?
+				((entry.shift) ? this.ctrlAltShiftActions : this.ctrlAltActions) :
+				((entry.shift) ? this.altShiftActions : this.altActions);
+
+			if (entry.action != null)
+			{
+				actions[code] = entry.action;
+			}
+			else
+			{
+				delete actions[code];
+			}
+		}
+		else if (entry.action != null)
+		{
+			// Resolves the action when the key is pressed so that actions
+			// added after startup (eg. by plugins) can be bound here
+			var f = mxUtils.bind(this, function()
+			{
+				var action = this.actions.get(entry.action);
+
+				if (action != null && action.isEnabled())
+				{
+					action.funct.apply(this, arguments);
+				}
+			});
+
+			if (entry.control)
+			{
+				if (entry.shift)
+				{
+					this.keyHandler.bindControlShiftKey(code, f);
+				}
+				else
+				{
+					this.keyHandler.bindControlKey(code, f);
+				}
+			}
+			else
+			{
+				if (entry.shift)
+				{
+					this.keyHandler.bindShiftKey(code, f);
+				}
+				else
+				{
+					this.keyHandler.bindKey(code, f);
+				}
+			}
+		}
+		else
+		{
+			var keys = (entry.control) ?
+				((entry.shift) ? this.keyHandler.controlShiftKeys : this.keyHandler.controlKeys) :
+				((entry.shift) ? this.keyHandler.shiftKeys : this.keyHandler.normalKeys);
+			delete keys[code];
+		}
+
+		// Updates the shortcut shown in the menus for the action
+		if (entry.action != null)
+		{
+			var action = this.actions.get(entry.action);
+			var keyName = (isChar) ? entry.keyCode.toUpperCase() :
+				(((code >= 48 && code <= 57) || (code >= 65 && code <= 90)) ?
+				String.fromCharCode(code) : EditorUi.keyNames[code]);
+
+			if (action != null && keyName != null)
+			{
+				action.shortcut = ((entry.control) ? Editor.ctrlKey + '+' : '') +
+					((entry.alt) ? Editor.altKey + '+' : '') +
+					((entry.shift) ? Editor.shiftKey + '+' : '') + keyName;
+			}
+		}
+	};
+
 	EditorUi.prototype.installMessageHandler = function(fn)
 	{
 		var changeListener = null;
@@ -19548,7 +23578,12 @@
 		var autosave = false;
 		var lastData = null;
 		var embedShadowPages = null;
-		
+
+		// Forward host-claimed keyboard chords (e.g. Ctrl+P) to the embedding app
+		// so it can run its own commands. Reads Editor.passThroughKeys, set via
+		// the configure config.
+		this.installPassThroughKeys();
+
 		var updateStatus = mxUtils.bind(this, function(sender, eventObject)
 		{
 			if (!this.editor.modified || urlParams['modified'] == '0')
@@ -19579,7 +23614,8 @@
 			
 			var data = evt.data;
 			var afterLoad = null;
-			
+			var pendingLayout = null;
+
 			var extractDiagramXml = mxUtils.bind(this, function(data)
 			{
 				if (data != null && typeof data.charAt === 'function' && data.charAt(0) != '<')
@@ -19665,7 +23701,10 @@
 					}
 					else if (data.action == 'layout')
 					{
-						this.executeLayouts(this.editor.graph.createLayouts(data.layouts));
+						// Accepts a custom-layout array or any shorthand
+						// accepted by resolveLayoutList (preset names,
+						// 'libavoid'), same as the load "layout" option.
+						this.executeLayoutSpec(data.layouts);
 
 						return;
 					}
@@ -19976,8 +24015,8 @@
 										this.getEmbeddedSvg(xml, this.editor.graph, null, true, function(svg)
 										{
 											postDataBack(uri, svg);
-										}, null, null, data.embedImages, this.editor.graph.background, 
-										data.scale, data.border, data.shadow, 'auto');
+										}, null, null, data.embedImages, this.editor.graph.background,
+										data.scale, data.border, data.shadow, 'auto', null, data.embedFonts);
 										return;
 									}
 
@@ -20068,7 +24107,7 @@
 										{
 											var graphModel = graph.model;
 											var layers = graphModel.getChildCells(graphModel.getRoot());
-											var layerIdsMap = {};
+											var layerIdsMap = Object.create(null);
 											
 											for (var i = 0; i < data.layerIds.length; i++)
 											{
@@ -20087,7 +24126,25 @@
 										{
 											theme = Editor.isDarkMode() ? 'dark' : 'light';
 										}
-										
+
+										// Reduces scale for very large diagrams so that the export
+										// stays within maxCanvasExportArea and generating the
+										// image cannot crash the browser tab by running out
+										// of memory
+										if (data.width == null && this.maxCanvasExportArea > 0)
+										{
+											var b = graph.getGraphBounds();
+											var border = (data.border != null) ? data.border : 0;
+											var w = Math.ceil(b.width / graph.view.scale) + 2 * border;
+											var h = Math.ceil(b.height / graph.view.scale) + 2 * border;
+											var s = (data.scale != null) ? data.scale : 1;
+
+											if (w * h * s * s > this.maxCanvasExportArea)
+											{
+												data.scale = Math.sqrt(this.maxCanvasExportArea / (w * h));
+											}
+										}
+
 										this.editor.exportToCanvas(mxUtils.bind(this, function(canvas)
 										{
 											processUri(canvas.toDataURL('image/png'));
@@ -20107,6 +24164,10 @@
 									}
 
 									graphReady();
+								}
+								else if (!this.isRemoteExportEnabled())
+								{
+									processUri(null);
 								}
 								else
 								{
@@ -20172,6 +24233,16 @@
 
 									return;
 								}
+								else if (data.format == 'json')
+								{
+									msg.format = data.format;
+									msg.data = this.createJsonForExport(data.allPages != false,
+										data.includeData == true, data.compressed == true,
+										data.selection == true);
+									parent.postMessage(JSON.stringify(msg), '*');
+
+									return;
+								}
 								else
 								{
 									// Creates a preview with no alt text for unsupported browsers
@@ -20220,14 +24291,15 @@
 											{
 												theme = 'auto';
 											}
-											
+
 											if (data.theme != null)
 											{
 												theme = data.theme;
 											}
 
 											this.getEmbeddedSvg(msg.xml, this.editor.graph, null, true, postResult, null, null,
-												data.embedImages, bg, data.scale, data.border, data.shadow, theme);
+												data.embedImages, bg, data.scale, data.border, data.shadow, theme,
+												data.embedCellMetadata, data.embedFonts);
 										}
 									}
 									else
@@ -20236,10 +24308,19 @@
 											(data.spinKey != null) ? mxResources.get(data.spinKey) : data.spin))
 										{
 											this.editor.graph.setEnabled(false);
-											var svgRoot = this.editor.graph.getSvg(bg, data.scale, data.border, null, null,
-												null, null, null, null, this.editor.graph.shadowVisible || data.shadow,
-												null, theme);
-											
+											var imgExport = this.editor.graph.createSvgImageExport(
+												false, (data.embedCellMetadata) ? true : false);
+											var tempFontLookup = Object.create(null);
+
+											// Restricts font embedding to fonts used in rendered cells
+											var svgRoot = this.getSvgWithFontLookup(tempFontLookup, imgExport,
+												mxUtils.bind(this, function()
+											{
+												return this.editor.graph.getSvg(bg, data.scale, data.border, null, null,
+													null, null, imgExport, null, this.editor.graph.shadowVisible || data.shadow,
+													null, theme);
+											}));
+
 											if (this.editor.graph.shadowVisible || data.shadow)
 											{
 												this.editor.graph.addSvgShadow(svgRoot);
@@ -20258,7 +24339,7 @@
 												{
 													postResult(mxUtils.getXml(svgRoot));
 												}
-											}));
+											}), data.embedFonts, tempFontLookup);
 										}
 									}
 									
@@ -20309,6 +24390,12 @@
 							data.diffSync != null && data.diffSync.patchOnly == true);
 						this.embedExportProtocol = data.exportProtocol == true;
 						var sourceMetadata = data.sourceMetadata || null;
+						// layout: run the requested layout once the diagram is
+						// loaded (a preset name or custom-layout JSON, the same
+						// format as the standalone "layout" action and the desktop
+						// --layout flag). Applied in doLoad before the sync
+						// baseline so the laid-out result is the baseline.
+						pendingLayout = (data.layout != null) ? data.layout : null;
 						this.hideDialog();
 						
 						if (data.modified != null && urlParams['modified'] == null)
@@ -20419,6 +24506,38 @@
 							});
 						}
 
+						// Scrolls the given diagram coordinate to the top left
+						// corner of the viewport after loading (and after the
+						// optional scale or fit above)
+						if (data.scroll != null && data.scroll.x != null &&
+							data.scroll.y != null)
+						{
+							var scrollPos = data.scroll;
+							var beforeScroll = afterLoad;
+
+							afterLoad = mxUtils.bind(this, function()
+							{
+								if (beforeScroll != null)
+								{
+									beforeScroll();
+								}
+
+								var graph = this.editor.graph;
+								var s = graph.view.scale;
+								var t = graph.view.translate;
+
+								if (mxUtils.hasScrollbars(graph.container))
+								{
+									graph.container.scrollLeft = (t.x + scrollPos.x) * s;
+									graph.container.scrollTop = (t.y + scrollPos.y) * s;
+								}
+								else
+								{
+									graph.view.setTranslate(-scrollPos.x, -scrollPos.y);
+								}
+							});
+						}
+
 						if (data.rect != null)
 						{
 							var border = this.embedExportBorder;
@@ -20454,7 +24573,7 @@
 								graph.maxFitScale = maxFitScale;
 								
 								graph.fit(2 * border, null, null, null, null, null, h0);
-								this.setPageVisible(false);
+								this.setPageVisible(urlParams['pv'] == '1');
 
 								if (this.minInlineWidth != null &&
 									graph.getGraphBounds().width < this.minInlineWidth)
@@ -20523,9 +24642,12 @@
 
 							if (data.format == 'mermaid')
 							{
-								if (window.isMermaidEnabled)
+								if (EditorUi.isMermaidSupported())
 								{
-									this.parseMermaidDiagram(data.data, null, mxUtils.bind(this, function(xml)
+									// Loads the parsed result (group, raw cells or image)
+									// and notifies the parent, regardless of how it was
+									// produced below.
+									var afterMermaid = mxUtils.bind(this, function(xml)
 									{
 										fn(xml, evt, null, convertToSketch);
 
@@ -20558,10 +24680,47 @@
 												}
 											}
 										}
-									}), mxUtils.bind(this, function(e)
+									});
+
+									var onMermaidError = mxUtils.bind(this, function(e)
 									{
 										this.handleError(e);
-									}), null, true);
+									});
+
+									if (data.image)
+									{
+										// Opt in per descriptor with image:true to load the
+										// parsed diagram as a static SVG image cell (carrying
+										// the mermaid source for re-editing), matching the
+										// legacy image insert. New images follow the configured
+										// Mermaid config, or the legacy look when unset
+										// (see parseMermaidImage).
+										this.parseMermaidImage(data.data, afterMermaid, onMermaidError);
+									}
+									else
+									{
+										this.parseMermaidDiagram(data.data, null, mxUtils.bind(this, function(xml)
+										{
+											// Opt in per descriptor with wrap:true to wrap the
+											// result in the editable mermaid group (a re-openable
+											// group carrying the source), matching Insert >
+											// Mermaid. Default off for backwards compatibility:
+											// existing integrators load the raw parsed cells.
+											//
+											// normalize:true shifts the wrapped content so the
+											// group's padded bounds start at (0,0) — the diagram
+											// is loaded as a full file here (not imported at an
+											// insert point), so without this the groupPadding
+											// spills into negative space off the page origin.
+											if (data.wrap)
+											{
+												xml = mxMermaidToDrawio.wrapGroup(xml, data.data,
+													EditorUi.getInsertMermaidConfig(), {normalize: true});
+											}
+
+											afterMermaid(xml);
+										}), onMermaidError);
+									}
 								}
 								else
 								{
@@ -20754,105 +24913,135 @@
 					this.handleError(e);
 				}
 				ignoreChange = false;
-				
-				if (urlParams['modified'] != null)
-				{
-					this.clearStatus();
-				}
 
-				lastData = getData();
+				// Assigns a unique cell-ID prefix for this embed editor so cells
+				// created here do not collide with cells created in other embed
+				// editors of the same file. Without it every embed editor reuses the
+				// same incrementing IDs (2, 3, ...) and a merge/diff treats different
+				// new cells as the same cell. fileLoaded does this for real files but
+				// the embed load path bypasses it.
+				this.editor.graph.model.prefix = Editor.guid() + '-';
 
-				// Initialize shadow pages for diff-based sync
-				if (this.embedDiffSync)
+				// Establishes the sync baseline and sends the load response.
+				// Deferred until after the optional layout (below) so the
+				// laid-out diagram becomes the baseline (no spurious autosave)
+				// and the reported bounds reflect the new positions.
+				var afterModel = mxUtils.bind(this, function()
 				{
-					embedShadowPages = this.clonePages(this.pages);
-				}
-
-				if (autosave && changeListener == null)
-				{
-					changeListener = mxUtils.bind(this, function(sender, eventObject)
+					if (urlParams['modified'] != null)
 					{
-						var data = getData();
+						this.clearStatus();
+					}
 
-						if (data != lastData && !ignoreChange)
+					lastData = getData();
+
+					// Initialize shadow pages for diff-based sync
+					if (this.embedDiffSync)
+					{
+						embedShadowPages = this.clonePages(this.pages);
+					}
+
+					if (autosave && changeListener == null)
+					{
+						changeListener = mxUtils.bind(this, function(sender, eventObject)
 						{
-							var msg = this.createLoadMessage('autosave');
-							msg.message = message;
+							var data = getData();
 
-							if (this.embedDiffSync && embedShadowPages != null)
+							if (data != lastData && !ignoreChange)
 							{
-								var currentPages = this.clonePages(this.pages);
-								var patch = this.diffPages(embedShadowPages, currentPages);
+								var msg = this.createLoadMessage('autosave');
+								msg.message = message;
 
-								if (!mxUtils.isEmptyObject(patch))
+								if (this.embedDiffSync && embedShadowPages != null)
 								{
-									msg.patch = patch;
-									msg.checksum = this.getHashValueForPages(currentPages);
+									var currentPages = this.clonePages(this.pages);
+									var patch = this.diffPages(embedShadowPages, currentPages);
 
-									if (!this.embedDiffSyncPatchOnly)
+									if (!mxUtils.isEmptyObject(patch))
 									{
+										msg.patch = patch;
+										msg.checksum = this.getHashValueForPages(currentPages);
+
+										if (!this.embedDiffSyncPatchOnly)
+										{
+											msg.xml = data;
+										}
+									}
+									else
+									{
+										// No structural changes but data changed
 										msg.xml = data;
 									}
+
+									embedShadowPages = currentPages;
 								}
 								else
 								{
-									// No structural changes but data changed
 									msg.xml = data;
 								}
 
-								embedShadowPages = currentPages;
-							}
-							else
-							{
-								msg.xml = data;
+								var parent = this.embedMessageSource || window.opener || window.parent;
+								parent.postMessage(JSON.stringify(msg), '*');
 							}
 
-							var parent = this.embedMessageSource || window.opener || window.parent;
-							parent.postMessage(JSON.stringify(msg), '*');
-						}
+							lastData = data;
+						});
 
-						lastData = data;
-					});
-					
-					this.editor.graph.model.addListener(mxEvent.CHANGE, changeListener);
+						this.editor.graph.model.addListener(mxEvent.CHANGE, changeListener);
 
-					// Some options trigger autosave
-					this.editor.graph.addListener('gridSizeChanged', changeListener);
-					this.editor.graph.addListener('shadowVisibleChanged', changeListener);
-					this.addListener('pageFormatChanged', changeListener);
-					this.addListener('pageScaleChanged', changeListener);
-					this.addListener('backgroundColorChanged', changeListener);
-					this.addListener('backgroundImageChanged', changeListener);
-					this.addListener('foldingEnabledChanged', changeListener);
-					this.addListener('mathEnabledChanged', changeListener);
-					this.addListener('gridEnabledChanged', changeListener);
-					this.addListener('guidesEnabledChanged', changeListener);
-					this.addListener('pageViewChanged', changeListener);
-				}
-				
-				// Runs afterLoad before sending the load response so that
-				// the reported scale and bounds reflect any adjustments
-				// (e.g. custom scale parameter)
-				if (afterLoad != null)
-				{
-					afterLoad();
-				}
-
-				// Sends the bounds of the graph to the host after parsing
-				if (urlParams['returnbounds'] == '1' || urlParams['proto'] == 'json')
-				{
-					var resp = this.createLoadMessage('load');
-
-					// Attaches XML to response
-					resp.xml = data;
-
-					// Include checksum when diff sync is enabled
-					if (this.embedDiffSync && this.pages != null)
-					{
-						resp.checksum = this.getHashValueForPages(this.pages);
+						// Some options trigger autosave
+						this.editor.graph.addListener('gridSizeChanged', changeListener);
+						this.editor.graph.addListener('shadowVisibleChanged', changeListener);
+						this.addListener('pageFormatChanged', changeListener);
+						this.addListener('pageScaleChanged', changeListener);
+						this.addListener('backgroundColorChanged', changeListener);
+						this.addListener('backgroundImageChanged', changeListener);
+						this.addListener('foldingEnabledChanged', changeListener);
+						this.addListener('mathEnabledChanged', changeListener);
+						this.addListener('gridEnabledChanged', changeListener);
+						this.addListener('guidesEnabledChanged', changeListener);
+						this.addListener('tooltipsEnabledChanged', changeListener);
+						this.addListener('pageViewChanged', changeListener);
+						this.addListener('connectionPointsChanged', changeListener);
+						this.addListener('connectionArrowsChanged', changeListener);
 					}
 
-					parent.postMessage(JSON.stringify(resp), '*');
+					// Runs afterLoad before sending the load response so that
+					// the reported scale and bounds reflect any adjustments
+					// (e.g. custom scale parameter or layout)
+					if (afterLoad != null)
+					{
+						afterLoad();
+					}
+
+					// Sends the bounds of the graph to the host after parsing
+					if (urlParams['returnbounds'] == '1' || urlParams['proto'] == 'json')
+					{
+						var resp = this.createLoadMessage('load');
+
+						// Attaches XML to response (re-read when a layout ran so
+						// the host receives the laid-out diagram)
+						resp.xml = (pendingLayout != null) ? getData() : data;
+
+						// Include checksum when diff sync is enabled
+						if (this.embedDiffSync && this.pages != null)
+						{
+							resp.checksum = this.getHashValueForPages(this.pages);
+						}
+
+						parent.postMessage(JSON.stringify(resp), '*');
+					}
+				});
+
+				// layout (load option): apply before the baseline so it is
+				// absorbed into the loaded state rather than synced as a change.
+				if (pendingLayout != null)
+				{
+					this.executeLayoutSpec(pendingLayout, afterModel);
+				}
+				else
+				{
+					afterModel();
 				}
 			});
 			
@@ -20869,32 +25058,23 @@
 					this.handleError(e);
 				}), filename);
 			}
-			else if (data != null && typeof data.substring === 'function' && new XMLHttpRequest().upload && this.isRemoteFileFormat(data, ''))
+			else if (data != null && typeof data.substring === 'function' && this.isGliffyData(data, ''))
 			{
-				if (this.isOffline())
+				this.importGliffy(data, mxUtils.bind(this, function(xml)
 				{
-					this.showError(mxResources.get('error'), mxResources.get('notInOffline'));
-				}
-				else
-				{
-					// Asynchronous parsing via server
-					this.parseFileData(data, mxUtils.bind(this, function(xhr)
+					if (xml.substring(0, 13) == '<mxGraphModel')
 					{
-						if (xhr.readyState == 4)
-						{
-							if (xhr.status >= 200 && xhr.status <= 299 &&
-								xhr.responseText.substring(0, 13) == '<mxGraphModel')
-							{
-								doLoad(xhr.responseText, evt);
-							}
-							else
-							{
-								this.handleError({message: xhr.status == 413? mxResources.get('diagramTooLarge') : 
-										mxResources.get('unknownError')});
-							}
-						}
-					}), '');
-				}
+						doLoad(xml, evt);
+					}
+					else
+					{
+						this.handleError({message: mxResources.get('unknownError')});
+					}
+				}), mxUtils.bind(this, function(err)
+				{
+					this.handleError({message: (err != null && err.status == 413) ? mxResources.get('diagramTooLarge') :
+							mxResources.get('unknownError')});
+				}), '');
 			}
 			else if (data != null && typeof data.substring === 'function' && this.isLucidChartData(data))
 			{
@@ -20940,6 +25120,38 @@
 				
 				parent.postMessage(JSON.stringify({event: 'openLink', href: href, target: target, allowOpener: allowOpener}), '*');
 			};
+
+			// In suppressNewWindows mode, <a target="_blank"> links (e.g. in
+			// hover tooltips and HTML labels) are opened directly by the browser
+			// via window.open — which a popup-blocking host blocks and which
+			// bypasses openLink, so the host is never notified. Intercept such
+			// clicks in the capture phase and route them through openLink (which
+			// posts the openLink event above) instead.
+			if (Editor.suppressNewWindows)
+			{
+				document.addEventListener('click', mxUtils.bind(this, function(evt)
+				{
+					var source = mxEvent.getSource(evt);
+
+					while (source != null && source.nodeName != 'A')
+					{
+						source = source.parentNode;
+					}
+
+					if (source != null)
+					{
+						var href = source.getAttribute('href');
+
+						if (href != null && href.charAt(0) != '#' &&
+							href.substring(0, 11) != 'javascript:' &&
+							!this.editor.graph.isCustomLink(href))
+						{
+							evt.preventDefault();
+							this.editor.graph.openLink(href, source.getAttribute('target'));
+						}
+					}
+				}), true);
+			}
 		}
 	};
 	
@@ -21077,8 +25289,25 @@
 					try
 					{
 						var list = JSON.parse(newValue);
-						this.executeLayouts(this.editor.graph.createLayouts(list));
+
+						// A single selected layout container takes the list as
+						// its new childLayout instead of a one-shot run (only
+						// for arrays — other parsed JSON keeps the legacy
+						// one-shot path and its error behavior).
+						var container = this.getSelectedLayoutContainer();
+
+						if (container != null && Array.isArray(list) &&
+							list.length > 0)
+						{
+							this.setContainerChildLayout(container, list);
+						}
+						else
+						{
+							this.executeLayouts(this.editor.graph.createLayouts(list));
+						}
+
 						this.customLayoutConfig = list;
+						this.lastLayoutSpec = list;
 						this.hideDialog();
 					}
 					catch (e)
@@ -21088,6 +25317,9 @@
 				}
 			}), null, null, null, null, mxUtils.bind(this, function(buttons, input)
 			{
+				var addSelect = this.createLayoutAddSelect(input);
+				buttons.appendChild(addSelect);
+
 				var copyBtn = mxUtils.button(mxResources.get('copy'), mxUtils.bind(this, function()
 				{
 					try
@@ -21095,7 +25327,7 @@
 						var orig = input.value;
 						input.value = JSON.stringify(JSON.parse(orig));
 						input.focus();
-						
+
 						if (mxClient.IS_GC || mxClient.IS_FF || document.documentMode >= 5)
 						{
 							input.select();
@@ -21104,7 +25336,7 @@
 						{
 							document.execCommand('selectAll', false, null);
 						}
-						
+
 						document.execCommand('copy');
 						this.alert(mxResources.get('copiedToClipboard'));
 
@@ -21119,11 +25351,320 @@
 				copyBtn.setAttribute('title', 'copy');
 				copyBtn.className = 'geBtn';
 				buttons.appendChild(copyBtn);
-			}), true, null, null, 'https://www.drawio.com/doc/faq/apply-layouts');
+			}), true, null, null, EditorUi.APPLY_LAYOUTS_SPEC_URL);
 
 			this.showDialog(dlg.container, 620, 460, true, true, null, null, null, new mxRectangle(0, 0, 440, 280));
 			dlg.init();
 		}));
+	};
+
+	/**
+	 * URL of the canonical JSON layout spec — the help-icon target for the
+	 * custom layout dialog. Defined once here so a future repoint doesn't
+	 * have to touch every callsite.
+	 */
+	EditorUi.APPLY_LAYOUTS_SPEC_URL = 'https://www.drawio.com/docs/reference/json-layout-specification/';
+
+	/**
+	 * Restricts the given layouts to the supplied cell subset. mxGraph
+	 * layouts get their `isVertexIgnored` wrapped to OR the existing rule
+	 * with "not in subset"; ELK layouts get a `cellFilter` callback set on
+	 * the instance (the bridge passes it down to ElkAdapter, which then
+	 * drops excluded vertices + their edges from the ELK input), as do
+	 * prepare() adapters that advertise scoping support via a null
+	 * `cellFilter` property (see LibavoidRouting.createLayout, which then
+	 * only routes the subset's edges).
+	 *
+	 * Used by `importCsv` so a CSV import's layout pass only moves the
+	 * cells the import just created, leaving the rest of the page alone.
+	 *
+	 * The IIFE wrap around the isVertexIgnored swap is required because
+	 * `var original = ...` inside the `for` loop has function scope —
+	 * without it, every wrapped function would close over the last
+	 * iteration's value.
+	 */
+	EditorUi.prototype.scopeLayoutsToCells = function(layouts, subset)
+	{
+		var cellSet = {};
+
+		for (var i = 0; i < subset.length; i++)
+		{
+			if (subset[i] != null) cellSet[subset[i].id] = true;
+		}
+
+		var cellFilter = function(cell)
+		{
+			return cell != null && cellSet[cell.id] === true;
+		};
+
+		for (var i = 0; i < layouts.length; i++)
+		{
+			var layout = layouts[i];
+
+			if ((typeof ElkLayout !== 'undefined' && layout instanceof ElkLayout) ||
+				layout.cellFilter !== undefined)
+			{
+				layout.cellFilter = cellFilter;
+			}
+			else if (typeof layout.isVertexIgnored === 'function')
+			{
+				(function(l)
+				{
+					var original = l.isVertexIgnored;
+					l.isVertexIgnored = function(vertex)
+					{
+						return original.apply(this, arguments) || !cellFilter(vertex);
+					};
+				})(layout);
+			}
+		}
+	};
+
+	/**
+	 * Builds the "Add layout" <select> for the custom layout dialog. Picking
+	 * an entry shows that layout's config dialog (for ELK and OrgChart); on
+	 * Apply, the resulting {layout, config} entry is appended to the textarea
+	 * JSON. The textarea stays freely editable so users can tweak options
+	 * that the per-layout config dialogs don't expose.
+	 *
+	 * Because draw.io only stacks one dialog at a time, picking an entry
+	 * tears down the textarea dialog and opens the per-layout one; Cancel
+	 * re-opens the textarea with the unchanged content so unsaved edits
+	 * survive.
+	 */
+	EditorUi.prototype.createLayoutAddSelect = function(input)
+	{
+		var editorUi = this;
+
+		var select = document.createElement('select');
+		select.className = 'geBtn';
+		select.style.marginRight = '8px';
+		select.style.maxWidth = '180px';
+
+		var placeholder = document.createElement('option');
+		placeholder.value = '';
+		mxUtils.write(placeholder, mxResources.get('add') + '...');
+		placeholder.disabled = true;
+		placeholder.selected = true;
+		select.appendChild(placeholder);
+
+		var entries = [];
+
+		if (typeof ElkLayout !== 'undefined')
+		{
+			// algo + direction come from ElkLayout.MENU_PRESETS (shared with
+			// drawio-mcp); only label + layoutName are editor-specific here.
+			var elkEntry = function(name, layoutName)
+			{
+				var p = ElkLayout.MENU_PRESETS[name];
+				return {label: name, kind: 'elk', algo: p.algorithm,
+					preset: p.options, layoutName: layoutName};
+			};
+			entries.push(elkEntry('verticalFlow', 'elkLayered'));
+			entries.push(elkEntry('horizontalFlow', 'elkLayered'));
+			entries.push(elkEntry('verticalTree', 'elkTree'));
+			entries.push(elkEntry('horizontalTree', 'elkTree'));
+			entries.push(elkEntry('radialTree', 'elkRadial'));
+			entries.push(elkEntry('organic', 'elkOrganic'));
+			// elkStress is available via JSON / CSV but intentionally not in
+			// this dropdown — it's not in the Arrange > Layout menu.
+		}
+
+		entries.push({label: 'orgChart', kind: 'orgchart'});
+		entries.push({label: 'circle', kind: 'simple', layoutName: 'mxCircleLayout', config: {}});
+		entries.push({label: 'parallels', kind: 'simple', layoutName: 'mxParallelEdgeLayout',
+			config: {spacing: 20, checkOverlap: true}});
+
+		// Shown only when the libavoid extensions bundle is loaded (a no-op in
+		// viewers / configs without extensions.min.js).
+		if (typeof LibavoidRouting !== 'undefined')
+		{
+			entries.push({label: 'orthogonalRouting', kind: 'simple',
+				layoutName: LibavoidRouting.LAYOUT_NAME, config: {}});
+		}
+
+		for (var i = 0; i < entries.length; i++)
+		{
+			var opt = document.createElement('option');
+			opt.value = String(i);
+			mxUtils.write(opt, mxResources.get(entries[i].label) +
+				(entries[i].kind === 'elk' || entries[i].kind === 'orgchart' ? '...' : ''));
+			select.appendChild(opt);
+		}
+
+		mxEvent.addListener(select, 'change', mxUtils.bind(this, function()
+		{
+			var idx = parseInt(select.value);
+			select.selectedIndex = 0;
+
+			if (isNaN(idx) || idx < 0 || idx >= entries.length) return;
+
+			var entry = entries[idx];
+			var current = input.value;
+			var existing;
+
+			if (mxUtils.trim(current).length === 0)
+			{
+				existing = [];
+			}
+			else
+			{
+				try
+				{
+					existing = JSON.parse(current);
+				}
+				catch (e)
+				{
+					// Keep the invalid hand-edit in the textarea instead of
+					// silently dropping it. The user can fix the JSON, then
+					// pick the layout again.
+					editorUi.handleError(e);
+					return;
+				}
+
+				if (!Array.isArray(existing))
+				{
+					editorUi.handleError(new Error(
+						mxResources.get('error') + ': expected JSON array'));
+					return;
+				}
+			}
+
+			var appendAndReopen = mxUtils.bind(this, function(newEntry)
+			{
+				existing.push(newEntry);
+				editorUi.hideDialog();
+				editorUi.showCustomLayoutDialog(JSON.stringify(existing, null, 2));
+			});
+
+			var reopenUnchanged = mxUtils.bind(this, function()
+			{
+				editorUi.hideDialog();
+				editorUi.showCustomLayoutDialog(current);
+			});
+
+			if (entry.kind === 'elk')
+			{
+				editorUi.hideDialog();
+
+				ElkLayout.runWithDialog(editorUi, entry.algo, entry.preset,
+					mxResources.get(entry.label),
+					function(layoutOptions, runOptions)
+					{
+						// baseOptions (entry.preset, e.g. direction) are merged
+						// into layoutOptions inside runWithDialog, so the captured
+						// JSON already includes the direction — no need to merge
+						// again here.
+						var config = Graph.elkOptionsToConfig(layoutOptions, runOptions);
+						appendAndReopen({layout: entry.layoutName, config: config});
+					},
+					reopenUnchanged);
+			}
+			else if (entry.kind === 'orgchart')
+			{
+				editorUi.hideDialog();
+				editorUi.showOrgChartConfigDialog(appendAndReopen, reopenUnchanged);
+			}
+			else
+			{
+				appendAndReopen({layout: entry.layoutName, config: entry.config || {}});
+			}
+		}));
+
+		return select;
+	};
+
+	/**
+	 * Opens the same Org Chart type/spacing dialog that Arrange > Layout > Org
+	 * Chart uses, but instead of running the layout it hands the resulting
+	 * config to onApply as a {layout, config} entry. Mirrors the dialog in
+	 * Menus.js to avoid behavior drift between the two entry points.
+	 */
+	EditorUi.prototype.showOrgChartConfigDialog = function(onApply, onCancel)
+	{
+		var editorUi = this;
+		var branchOptimizer = 2, parentChildSpacingVal = 20, siblingSpacingVal = 20;
+
+		var div = document.createElement('div');
+
+		var addRow = function(labelKey, input)
+		{
+			var title = document.createElement('div');
+			title.style.marginTop = '6px';
+			title.style.display = 'inline-block';
+			title.style.width = '180px';
+			mxUtils.write(title, mxResources.get(labelKey) + ': ');
+			div.appendChild(title);
+			div.appendChild(input);
+		};
+
+		var typeSelect = document.createElement('select');
+		typeSelect.style.width = '160px';
+		typeSelect.style.boxSizing = 'border-box';
+
+		var typesArr = [mxResources.get('linear'),
+			mxResources.get('hanger2'),
+			mxResources.get('hanger4'),
+			mxResources.get('fishbone1'),
+			mxResources.get('fishbone2'),
+			mxResources.get('1ColumnLeft'),
+			mxResources.get('1ColumnRight'),
+			mxResources.get('smart')];
+
+		for (var i = 0; i < typesArr.length; i++)
+		{
+			var option = document.createElement('option');
+			mxUtils.write(option, typesArr[i]);
+			option.value = i;
+			if (i === 2) option.setAttribute('selected', 'selected');
+			typeSelect.appendChild(option);
+		}
+
+		mxEvent.addListener(typeSelect, 'change', function()
+		{
+			branchOptimizer = parseInt(typeSelect.value);
+		});
+
+		addRow('orgChartType', typeSelect);
+
+		var parentChildSpacing = document.createElement('input');
+		parentChildSpacing.type = 'number';
+		parentChildSpacing.value = parentChildSpacingVal;
+		parentChildSpacing.style.width = '160px';
+		parentChildSpacing.style.boxSizing = 'border-box';
+		mxEvent.addListener(parentChildSpacing, 'change', function()
+		{
+			parentChildSpacingVal = parseInt(parentChildSpacing.value);
+		});
+		addRow('parentChildSpacing', parentChildSpacing);
+
+		var siblingSpacing = document.createElement('input');
+		siblingSpacing.type = 'number';
+		siblingSpacing.value = siblingSpacingVal;
+		siblingSpacing.style.width = '160px';
+		siblingSpacing.style.boxSizing = 'border-box';
+		mxEvent.addListener(siblingSpacing, 'change', function()
+		{
+			siblingSpacingVal = parseInt(siblingSpacing.value);
+		});
+		addRow('siblingSpacing', siblingSpacing);
+
+		var dlg = new CustomDialog(editorUi, div, function()
+		{
+			onApply({
+				layout: 'mxOrgChartLayout',
+				config: {
+					branchOptimizer: branchOptimizer,
+					parentChildSpacing: parentChildSpacingVal,
+					siblingSpacing: siblingSpacingVal
+				}
+			});
+		}, onCancel || null, mxResources.get('apply'),
+			'https://www.drawio.com/docs/manual/layouts/org-chart-layout/');
+
+		// null height = size to content (a fixed height clips the third
+		// row behind a scrollbar)
+		editorUi.showDialog(dlg.container, 355, null, true, true);
 	};
 
 	/**
@@ -21210,12 +25751,15 @@
     		var allCells = [];
 			var parents = [];
     		var cells = [];
-    		var dups = {};
+    		var dups = Object.create(null);
     		
     		if (lines.length > 0)
     		{
-        		// Internal lookup table
-        		var lookups = {};
+        		// Internal lookup table. Uses a null prototype as the keys are
+        		// untrusted connect targets (from the parsed # connect: directive)
+        		// so that a target such as __proto__ is a regular entry and cannot
+        		// resolve to or pollute Object.prototype.
+        		var lookups = Object.create(null);
         		
         		// Default values
         		graph = (graph != null) ? graph : this.editor.graph;
@@ -21262,8 +25806,11 @@
 					}
     			});
     				
-    			// Computes unscaled, untranslated graph bounds
-    			var pt = graph.getFreeInsertPoint();
+    			// Free-space insertion point, deliberately ignoring the
+    			// current mouse position — a CSV import should land in
+    			// open canvas below existing content, not under wherever
+    			// the cursor happened to be when the dialog opened.
+    			var pt = graph.getFreeInsertPoint(true);
 				var x0 = pt.x;
 				var y0 = pt.y;
 				var y = y0;
@@ -21453,7 +26000,10 @@
 					{
 						if (lookups[edges[e].to] == null)
 						{
-							lookups[edges[e].to] = {};
+							// Null prototype: inner keys are untrusted cell
+							// attribute values that must not swap the map's
+							// prototype or resolve to inherited members.
+							lookups[edges[e].to] = Object.create(null);
 						}
 					}
 				}
@@ -21519,7 +26069,7 @@
 						
 						if (labelname != null && labels != null)
 						{
-							var tempLabel = labels[newCell.getAttribute(labelname)];
+							var lbKey = newCell.getAttribute(labelname); var tempLabel = (lbKey != null && Object.prototype.hasOwnProperty.call(labels, lbKey)) ? labels[lbKey] : null;
 							
 							if (tempLabel != null)
 							{
@@ -21534,7 +26084,7 @@
 
 						if (stylename != null && styles != null)
 						{
-							var tempStyle = styles[newCell.getAttribute(stylename)];
+							var stKey = newCell.getAttribute(stylename); var tempStyle = (stKey != null && Object.prototype.hasOwnProperty.call(styles, stKey)) ? styles[stKey] : null;
 							
 							if (tempStyle != null)
 							{
@@ -21828,32 +26378,83 @@
 								edgeLayout.execute(graph.getDefaultParent());
 							}
 							
-			    			// Aligns cells to grid and/or rounds positions
+			    			// Snap the whole laid-out cluster to grid as one unit
+							// (single dx/dy applied to every cell) instead of
+							// snapping each cell's x/y individually. Per-cell
+							// snapping breaks center alignment between cells in
+							// the same vertical / horizontal spine when their
+							// widths / heights aren't multiples of gridSize —
+							// e.g. for the default CSV ELK gives Tessa (w=170)
+							// and Alison (w=200) the same center x, but
+							// rounding 159 → 160 and 144 → 140 independently
+							// shifts the centers 5px apart. Snap once via the
+							// bounding box top-left and translate uniformly.
+							var snapDx = 0;
+							var snapDy = 0;
+
+							if (cells.length > 0)
+							{
+								var firstGeo = graph.getCellGeometry(cells[0]);
+								snapDx = Math.round(graph.snap(firstGeo.x)) - firstGeo.x;
+								snapDy = Math.round(graph.snap(firstGeo.y)) - firstGeo.y;
+							}
+
 							for (var i = 0; i < cells.length; i++)
 		    				{
 								var geo = graph.getCellGeometry(cells[i]);
-								geo.x = Math.round(graph.snap(geo.x));
-								geo.y = Math.round(graph.snap(geo.y));
-								
+								geo.x = Math.round(geo.x + snapDx);
+								geo.y = Math.round(geo.y + snapDy);
+
 								if (width == 'auto')
 								{
-									geo.width = Math.round(graph.snap(geo.width));	
+									geo.width = Math.round(graph.snap(geo.width));
 								}
-								
+
 								if (height == 'auto')
 								{
-									geo.height = Math.round(graph.snap(geo.height));	
+									geo.height = Math.round(graph.snap(geo.height));
 								}
 		    				}
 						};
 						
-						if (layout.charAt(0) == '[')
+						// Resolve `auto` to one of the legacy hierarchical keys so
+						// the dispatch below picks the matching branch.
+						// Tree-shape (1 root + (n-1) edges) → verticaltree
+						// (mxCompactTreeLayout). Otherwise, 1 root →
+						// verticalflow (ELK's layered, tuned to mimic the
+						// legacy mxHierarchicalLayout output — see
+						// CSV_ELK_LAYOUTS for the per-key tuning).
+						// Both default to vertical (DOWN / NORTH) for `auto`.
+						// The default CSV (orgchart with cross-refs) lands on
+						// verticalflow.
+						if (layout == 'auto' && roots.length == 1)
+						{
+							layout = (select.length == 2 * cells.length - 1) ?
+								'verticaltree' : 'verticalflow';
+						}
+
+						// JSON custom-layout arrays, the libavoid shorthand and
+						// the Arrange > Layout preset names all resolve through
+						// the shared spec resolver (see resolveLayoutList). The
+						// CSV-specific names are handled in the branches below
+						// and must not reach the resolver: 'organic' names the
+						// legacy mxFastOrganicLayout here (not the ELK menu
+						// preset of the same name), and the CSV_ELK_LAYOUTS
+						// keys layer the CSV spacing knobs onto their configs.
+						var resolvedLayouts = (layout == 'organic' ||
+							EditorUi.CSV_ELK_LAYOUTS[layout] != null) ?
+							null : this.resolveLayoutList(layout);
+
+						if (resolvedLayouts != null)
 						{
 			    			// Required for layouts to work with new cells
 							var temp = afterInsert;
 			    			graph.view.validate();
 
-							this.executeLayouts(graph.createLayouts(JSON.parse(layout)), function()
+							var jsonLayouts = graph.createLayouts(resolvedLayouts);
+							this.scopeLayoutsToCells(jsonLayouts, select);
+
+							this.executeLayouts(jsonLayouts, function()
 							{
 								postProcess();
 								temp();
@@ -21866,68 +26467,51 @@
 							var circleLayout = new mxCircleLayout(graph);
 							circleLayout.disableEdgeStyle = false;
 		    				circleLayout.resetEdges = false;
-		    				
+
 		    				var circleLayoutIsVertexIgnored = circleLayout.isVertexIgnored;
-		    				
+
 			    			// Ignore other cells
 		    				circleLayout.isVertexIgnored = function(vertex)
 		    				{
 		    					return circleLayoutIsVertexIgnored.apply(this, arguments) ||
 		    						mxUtils.indexOf(cells, vertex) < 0;
 		    				};
-						
+
 				    		this.executeLayout(function()
 				    		{
 				    			circleLayout.execute(graph.getDefaultParent());
 				    			postProcess();
 				    		}, true, afterInsert);
-						
+
 				    		afterInsert = null;
 						}
-						else if (layout == 'horizontaltree' || layout == 'verticaltree' ||
-								(layout == 'auto' && select.length == 2 * cells.length - 1 && roots.length == 1))
-		    			{
+						else if (layout == 'verticaltree' || layout == 'horizontaltree')
+						{
 			    			// Required for layouts to work with new cells
 			    			graph.view.validate();
-			    			
+
 		    				var treeLayout = new mxCompactTreeLayout(graph, layout == 'horizontaltree');
 		    				treeLayout.levelDistance = nodespacing;
 		    				treeLayout.edgeRouting = false;
 		    				treeLayout.resetEdges = false;
 							treeLayout.sortEdges = true;
-		    				
+
+		    				var treeLayoutIsVertexIgnored = treeLayout.isVertexIgnored;
+
+			    			// Ignore other cells
+		    				treeLayout.isVertexIgnored = function(vertex)
+		    				{
+		    					return treeLayoutIsVertexIgnored.apply(this, arguments) ||
+		    						mxUtils.indexOf(cells, vertex) < 0;
+		    				};
+
 		    				this.executeLayout(function()
 		    	    		{
 		    					treeLayout.execute(graph.getDefaultParent(), (roots.length > 0) ? roots[0] : null);
 		    	    		}, true, afterInsert);
-		    				
+
 		    				afterInsert = null;
-		    			}
-		    			else if (layout == 'horizontalflow' || layout == 'verticalflow' ||
-		    					(layout == 'auto' && roots.length == 1))
-		    			{
-			    			// Required for layouts to work with new cells
-			    			graph.view.validate();
-			    			
-			    			var flowLayout = new mxHierarchicalLayout(graph,
-			    				(layout == 'horizontalflow') ?
-								mxConstants.DIRECTION_WEST :
-								mxConstants.DIRECTION_NORTH);
-			    			flowLayout.intraCellSpacing = nodespacing;
-			    			flowLayout.parallelEdgeSpacing = edgespacing;
-			    			flowLayout.interRankCellSpacing = levelspacing;
-			    			flowLayout.disableEdgeStyle = false;
-			    			
-			        		this.executeLayout(function()
-			        		{
-			        			flowLayout.execute(graph.getDefaultParent(), select);
-			        			
-			        			// Workaround for flow layout moving cells to origin
-			        			graph.moveCells(select, x0, y0);
-			        		}, true, afterInsert);
-				    			
-			    			afterInsert = null;
-			    		}
+						}
 						else if (layout == 'orgchart')
 						{
 			    			// Required for layouts to work with new cells
@@ -21958,29 +26542,131 @@
 		    			{
 			    			// Required for layouts to work with new cells
 			    			graph.view.validate();
-			    			
+
 		    				var organicLayout = new mxFastOrganicLayout(graph);
 		    				organicLayout.forceConstant = nodespacing * 3;
 		    				organicLayout.disableEdgeStyle = false;
 		    				organicLayout.resetEdges = false;
-		
+
 		    				var organicLayoutIsVertexIgnored = organicLayout.isVertexIgnored;
-		
+
 			    			// Ignore other cells
 		    				organicLayout.isVertexIgnored = function(vertex)
 		    				{
 		    					return organicLayoutIsVertexIgnored.apply(this, arguments) ||
 		    						mxUtils.indexOf(cells, vertex) < 0;
 		    				};
-		
+
 		    	    		this.executeLayout(function()
 		    	    		{
 		    	    			organicLayout.execute(graph.getDefaultParent());
 				    			postProcess();
 		    	    		}, true, afterInsert);
-		    	    		
+
 		    	    		afterInsert = null;
 		    			}
+						else if (EditorUi.CSV_ELK_LAYOUTS[layout] != null)
+						{
+							// Required for layouts to work with new cells
+							graph.view.validate();
+							var temp = afterInsert;
+
+							// Layer the CSV's `# nodespacing` / `# levelspacing`
+							// / `# edgespacing` knobs onto the static ELK config
+							// so they map to ELK's spacing options the same way
+							// they used to map to mxHierarchicalLayout /
+							// mxCompactTreeLayout's intra / inter / parallel
+							// edge spacing. Done at dispatch time (not in
+							// CSV_ELK_LAYOUTS) because the values come from the
+							// per-import CSV header, not from static defaults.
+							var elkTemplate = EditorUi.CSV_ELK_LAYOUTS[layout];
+							var elkConfig = mxUtils.clone(elkTemplate.config);
+							elkConfig['elk.spacing.nodeNode'] = nodespacing;
+							elkConfig['elk.layered.spacing.nodeNodeBetweenLayers'] = levelspacing;
+							elkConfig['elk.spacing.edgeEdge'] = edgespacing;
+							elkConfig['elk.layered.spacing.edgeEdgeBetweenLayers'] = edgespacing;
+
+							var elkLayouts = graph.createLayouts(
+								[{layout: elkTemplate.layout, config: elkConfig}]);
+							this.scopeLayoutsToCells(elkLayouts, select);
+
+							// ELK runs asynchronously: prepare() returns
+							// immediately and the apply pass runs in a later
+							// tick. Without an extra beginUpdate the outer
+							// transaction commits its insertions before the
+							// layout writes its results, splitting insert +
+							// layout across two undo steps. Pair this with the
+							// matching endUpdate via balanceElk() in every
+							// exit path so insert + layout collapse into one
+							// step and the model never gets stuck above 0.
+							graph.model.beginUpdate();
+							var elkBalanced = false;
+
+							var balanceElk = function()
+							{
+								if (!elkBalanced)
+								{
+									elkBalanced = true;
+									graph.model.endUpdate();
+								}
+							};
+
+							var self = this;
+
+							try
+							{
+								elkLayouts[0].prepare(graph.getDefaultParent(),
+									function(err, apply)
+								{
+									if (err != null)
+									{
+										balanceElk();
+										self.handleError(err);
+										return;
+									}
+
+									self.executeLayout(function()
+									{
+										apply();
+
+										// ELK packs its output near (0,0);
+										// anchor the laid-out cluster's
+										// top-left at the free insert point
+										// so the import lands on empty canvas
+										// like every other CSV layout (flow
+										// does the same with a static
+										// (x0, y0) moveCells translation).
+										var bbox = graph.getBoundingBoxFromGeometry(select);
+
+										if (bbox != null)
+										{
+											graph.moveCells(select,
+												x0 - bbox.x, y0 - bbox.y);
+										}
+
+										// Intentionally skipping postProcess
+										// here — the legacy mxHierarchicalLayout
+										// / mxCompactTreeLayout dispatches don't
+										// call it either, and its width / height
+										// grid-snap rounds auto-sized cells away
+										// from their natural rendered widths
+										// (e.g. Edward.w=218 → 220), breaking
+										// the visual match with the target.
+									}, true, function()
+									{
+										balanceElk();
+										temp();
+									});
+								});
+							}
+							catch (e)
+							{
+								balanceElk();
+								throw e;
+							}
+
+							afterInsert = null;
+						}
 					}
 	    			
 	    			this.hideDialog();
@@ -22275,7 +26961,7 @@
 		this.actions.get('pasteStyle').setEnabled(this.copiedStyle != null && active && ss.cells.length > 0);
 		this.actions.get('copyTextStyle').setEnabled(active && !graph.isSelectionEmpty());
 		this.actions.get('pasteTextStyle').setEnabled(this.copiedTextStyle != null && active && ss.cells.length > 0);
-		this.actions.get('editGeometry').setEnabled(ss.vertices.length > 0);
+		this.actions.get('editGeometry').setEnabled(ss.vertices.length > 0 && !ss.transparentBounds);
 		this.actions.get('addToScratchpad').setEnabled(ss.cells.length > 0);
 		this.actions.get('createShape').setEnabled(active);
 		this.actions.get('createRevision').setEnabled(active);
@@ -22366,6 +27052,10 @@
 								false, false, b, true, false, 'jpeg', grid);
 						}
 					}
+					else if (!editorUi.isRemoteExportEnabled())
+					{
+						editorUi.handleError({message: mxResources.get('notAvailable')});
+					}
 					else 
 					{
 						var extras = {globalVars: graph.getExportVariables()};
@@ -22429,7 +27119,239 @@
 		this.editor.graph.setEnabled(true);
 		return allPagesTxt;
 	};
-	
+
+	/**
+	 * Writes the label of the given cell to the result object. If the cell uses
+	 * HTML labels and the label contains markup, the plain text is written to
+	 * "label" and the original markup to "html"; otherwise the raw label is
+	 * written to "label". Empty labels are ignored.
+	 */
+	EditorUi.prototype.writeJsonLabel = function(cell, label, result)
+	{
+		if (label == null || label == '')
+		{
+			return;
+		}
+
+		if (this.editor.graph.isHtmlLabel(cell))
+		{
+			var tmp = document.createElement('div');
+			tmp.innerHTML = Graph.sanitizeHtml(label);
+
+			if (tmp.getElementsByTagName('*').length > 0)
+			{
+				result.label = mxUtils.trim(mxUtils.extractTextWithWhitespace([tmp]));
+				result.html = label;
+
+				return;
+			}
+		}
+
+		result.label = label;
+	};
+
+	/**
+	 * Returns a JSON representation of the given cell containing its structure
+	 * (id, type, parent and for edges source/target) plus label and metadata,
+	 * but no styles or geometry. Used by the JSON export (createJsonForExport).
+	 * Metadata are the custom attributes of object/UserObject cells (all
+	 * attributes except label, placeholders and id).
+	 */
+	EditorUi.prototype.getJsonForExportCell = function(cell, isLayer)
+	{
+		var result = {id: cell.getId()};
+
+		result.type = isLayer ? 'layer' : (cell.edge ? 'edge' :
+			(cell.vertex ? 'node' : 'group'));
+
+		if (!isLayer)
+		{
+			var parent = cell.getParent();
+
+			if (parent != null)
+			{
+				result.parent = parent.getId();
+			}
+		}
+
+		if (cell.edge)
+		{
+			if (cell.source != null)
+			{
+				result.source = cell.source.getId();
+			}
+
+			if (cell.target != null)
+			{
+				result.target = cell.target.getId();
+			}
+		}
+
+		var value = cell.value;
+
+		if (value != null && mxUtils.isNode(value))
+		{
+			this.writeJsonLabel(cell, value.getAttribute('label'), result);
+
+			var attrs = value.attributes;
+			var metadata = {};
+			var count = 0;
+
+			for (var i = 0; i < attrs.length; i++)
+			{
+				var name = attrs[i].nodeName;
+
+				if (name != 'label' && name != 'placeholders' && name != 'id')
+				{
+					metadata[name] = attrs[i].nodeValue;
+					count++;
+				}
+			}
+
+			if (count > 0)
+			{
+				result.metadata = metadata;
+			}
+		}
+		else if (typeof value === 'string')
+		{
+			this.writeJsonLabel(cell, value, result);
+		}
+
+		return result;
+	};
+
+	/**
+	 * Returns a JSON object {id, name, cells} for the given page (or the
+	 * current page if page is null). Walks all layers and their descendants
+	 * and serializes each cell via getJsonForExportCell.
+	 */
+	EditorUi.prototype.getJsonForPage = function(page, selectionCells)
+	{
+		var graph = this.editor.graph;
+		var model = graph.getModel();
+		var root;
+
+		if (page == null || page == this.currentPage)
+		{
+			root = model.getRoot();
+		}
+		else
+		{
+			root = this.updatePageRoot(page).root;
+		}
+
+		var cells = [];
+
+		var addCell = mxUtils.bind(this, function(cell, isLayer)
+		{
+			cells.push(this.getJsonForExportCell(cell, isLayer));
+			var childCount = cell.getChildCount();
+
+			for (var i = 0; i < childCount; i++)
+			{
+				addCell(cell.getChildAt(i), false);
+			}
+		});
+
+		if (selectionCells != null)
+		{
+			// Exports the selected cells and their descendants, skipping cells
+			// whose ancestor is also selected to avoid duplicates
+			var selected = {};
+
+			for (var i = 0; i < selectionCells.length; i++)
+			{
+				selected[selectionCells[i].getId()] = true;
+			}
+
+			for (var i = 0; i < selectionCells.length; i++)
+			{
+				var cell = selectionCells[i];
+				var ancestor = cell.getParent();
+				var nested = false;
+
+				while (ancestor != null)
+				{
+					if (selected[ancestor.getId()])
+					{
+						nested = true;
+						break;
+					}
+
+					ancestor = ancestor.getParent();
+				}
+
+				if (!nested)
+				{
+					addCell(cell, model.isLayer(cell));
+				}
+			}
+		}
+		else
+		{
+			var layerCount = root.getChildCount();
+
+			for (var i = 0; i < layerCount; i++)
+			{
+				addCell(root.getChildAt(i), true);
+			}
+		}
+
+		var result = {};
+
+		if (page != null)
+		{
+			result.id = page.getId();
+			result.name = page.getName();
+		}
+
+		result.cells = cells;
+
+		return result;
+	};
+
+	/**
+	 * Returns a JSON object describing the diagram structure and metadata for
+	 * export. Contains a version, an optional copy of the (optionally
+	 * compressed) diagram XML under "data", and the structural representation
+	 * of the current page or all pages under "pages". Styles and geometry are
+	 * intentionally omitted so the result is easy to consume by external tools
+	 * and LLMs; the optional "data" copy allows lossless re-import.
+	 */
+	EditorUi.prototype.createJsonForExport = function(allPages, includeData, compressed, selection)
+	{
+		var result = {version: EditorUi.VERSION};
+
+		if (includeData)
+		{
+			result.data = mxUtils.getXml(this.getXmlFileData(!selection, !allPages, !compressed));
+		}
+
+		var pages = [];
+
+		if (selection)
+		{
+			pages.push(this.getJsonForPage(this.currentPage,
+				this.editor.graph.getSelectionCells()));
+		}
+		else if (allPages && this.pages != null)
+		{
+			for (var i = 0; i < this.pages.length; i++)
+			{
+				pages.push(this.getJsonForPage(this.pages[i]));
+			}
+		}
+		else
+		{
+			pages.push(this.getJsonForPage(this.currentPage));
+		}
+
+		result.pages = pages;
+
+		return result;
+	};
+
 	EditorUi.prototype.showRemotelyStoredLibrary = function(title)
 	{
 		var selectedLibs = {};
@@ -22439,7 +27361,6 @@
 		
 		var hd = document.createElement('h3');
 		mxUtils.write(hd, mxUtils.htmlEntities(title));
-		hd.style.cssText = 'width:100%;text-align:center;margin-top:0px;margin-bottom:12px';
 		div.appendChild(hd);
 
 		var libsSection = document.createElement('div');
@@ -22601,8 +27522,14 @@
 	EditorUi.prototype.handleRemoteInvokeResponse = function(msg)
 	{
 		var msgMarkers = msg.msgMarkers;
-		var callback = this.remoteInvokeCallbacks[msgMarkers.callbackId];
-		
+		// The id comes from the message, so it must be a real array index. A key
+		// such as __proto__ would otherwise read Array.prototype and, on the
+		// write below, replace the array's prototype and break every later push.
+		var callbackId = (msgMarkers != null) ? msgMarkers.callbackId : null;
+		var callback = (typeof callbackId === 'number' && callbackId >= 0 &&
+			callbackId < this.remoteInvokeCallbacks.length) ?
+			this.remoteInvokeCallbacks[callbackId] : null;
+
 		if (callback == null)
 		{
 			throw new Error('No callback for ' + ((msgMarkers != null) ? msgMarkers.callbackId : 'null'));
@@ -22616,7 +27543,7 @@
 			callback.callback.apply(this, msg.resp);
 		}
 			
-		this.remoteInvokeCallbacks[msgMarkers.callbackId] = null; //set it to null only to keep the index
+		this.remoteInvokeCallbacks[callbackId] = null; //set it to null only to keep the index
 	};
 
 	EditorUi.prototype.remoteInvoke = function(remoteFn, remoteFnArgs, msgMarkers, callback, error)
@@ -22686,7 +27613,11 @@
 		{
 			//Remote invoke are allowed to call functions in AC
 			var funtionName = msg.funtionName;
-			var functionInfo = this.remoteInvokableFns[funtionName];
+			// Own property only: the name comes from the message, so an inherited
+			// member such as constructor or toString would otherwise pass as a
+			// whitelist entry and skip the allowedDomains origin check below
+			var functionInfo = (funtionName != null && Object.prototype.hasOwnProperty.call(
+				this.remoteInvokableFns, funtionName)) ? this.remoteInvokableFns[funtionName] : null;
 			
 			if (functionInfo != null && typeof this[funtionName] === 'function')
 			{
@@ -23273,8 +28204,573 @@
 	EditorUi.prototype.canComment = function()
 	{
 		var file = this.getCurrentFile();
-		
+
 		return file != null? file.canComment() : true;
+	};
+
+	/**
+	 * Are comments anchored to shapes supported
+	 */
+	EditorUi.prototype.anchoredCommentsSupported = function()
+	{
+		var file = this.getCurrentFile();
+
+		return file != null? file.anchoredCommentsSupported() : false;
+	};
+
+	/**
+	 * Are @mentions in comments supported
+	 */
+	EditorUi.prototype.mentionsSupported = function()
+	{
+		var file = this.getCurrentFile();
+
+		return file != null? file.mentionsSupported() : false;
+	};
+
+	/**
+	 * Are free-typed addresses offered as mention targets. Only relevant
+	 * for backends whose mention tokens are email-based.
+	 */
+	EditorUi.prototype.freeMentionsSupported = function()
+	{
+		var file = this.getCurrentFile();
+
+		return file != null? file.freeMentionsSupported() : false;
+	};
+
+	/**
+	 * Are mention candidates searched server-side as the user types. If
+	 * true, getMentionCandidates is called with the typed query and its
+	 * results are shown unfiltered, otherwise the candidates are fetched
+	 * once and filtered locally.
+	 */
+	EditorUi.prototype.mentionsLiveSearch = function()
+	{
+		var file = this.getCurrentFile();
+
+		return file != null? file.mentionsLiveSearch() : false;
+	};
+
+	/**
+	 * Does the backend notify mentioned people. If false, a hint is shown
+	 * in the comment composer when a mention is inserted.
+	 */
+	EditorUi.prototype.mentionNotificationsSupported = function()
+	{
+		var file = this.getCurrentFile();
+
+		return file != null? file.mentionNotificationsSupported() : true;
+	};
+
+	/**
+	 * Get the people that can be mentioned in comments. query is the text
+	 * typed after the @ and is only passed with mentionsLiveSearch.
+	 */
+	EditorUi.prototype.getMentionCandidates = function(success, error, query)
+	{
+		var file = this.getCurrentFile();
+
+		if (file != null)
+		{
+			file.getMentionCandidates(success, error, query);
+		}
+		else
+		{
+			success([]);
+		}
+	};
+
+	/**
+	 * Returns the plain text token that represents a mention of the given
+	 * user in the comment content. The default is the +email token that
+	 * Drive detects server-side. Backends override this in pairs with
+	 * parseMentionTokens.
+	 */
+	EditorUi.prototype.serializeMention = function(user)
+	{
+		return '+' + user.email;
+	};
+
+	/**
+	 * Returns the given comment content split into plain text segments
+	 * and mention objects ({id, email, displayName, pictureUrl}) for
+	 * rendering. The default parses the +email/@email tokens written by
+	 * serializeMention.
+	 */
+	EditorUi.prototype.parseMentionTokens = function(content)
+	{
+		var re = /[+@]([A-Za-z0-9.!#$%&'*/=?^_`{|}~+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})/g;
+		var segments = [];
+		var last = 0;
+		var match = null;
+
+		while ((match = re.exec(content)) != null)
+		{
+			if (match.index > last)
+			{
+				segments.push(content.substring(last, match.index));
+			}
+
+			segments.push({email: match[1]});
+			last = match.index + match[0].length;
+		}
+
+		if (last < content.length)
+		{
+			segments.push(content.substring(last));
+		}
+
+		return segments;
+	};
+
+	/**
+	 * Returns the object the comment cache is stored on: the current file
+	 * or, without a file, this instance (eg. integrations that override
+	 * getComments on a headless UI).
+	 */
+	EditorUi.prototype.getCommentCacheTarget = function()
+	{
+		var file = this.getCurrentFile();
+
+		return (file != null) ? file : this;
+	};
+
+	/**
+	 * Loads the comments into the cache on the current file without
+	 * blocking and fires a commentsChanged event when done. The cache
+	 * serves the comment indicators and the comments window. Concurrent
+	 * calls share one request.
+	 */
+	EditorUi.prototype.refreshCommentCache = function(success, error)
+	{
+		if (this.commentsSupported())
+		{
+			var target = this.getCommentCacheTarget();
+
+			if (target.commentCacheCallbacks != null)
+			{
+				target.commentCacheCallbacks.push([success, error]);
+			}
+			else
+			{
+				target.commentCacheCallbacks = [[success, error]];
+
+				var done = mxUtils.bind(this, function(index, arg)
+				{
+					var callbacks = target.commentCacheCallbacks;
+					target.commentCacheCallbacks = null;
+
+					for (var i = 0; callbacks != null && i < callbacks.length; i++)
+					{
+						if (callbacks[i][index] != null)
+						{
+							callbacks[i][index](arg);
+						}
+					}
+				});
+
+				this.getComments(mxUtils.bind(this, function(list)
+				{
+					if (this.getCommentCacheTarget() == target)
+					{
+						target.commentCache = list;
+						this.fireEvent(new mxEventObject('commentsChanged'));
+					}
+
+					done(0, list);
+				}), mxUtils.bind(this, function(err)
+				{
+					done(1, err);
+				}));
+			}
+		}
+		else if (success != null)
+		{
+			success(null);
+		}
+	};
+
+	/**
+	 * Invoked after a comment was added, changed, deleted, resolved or
+	 * re-opened locally. Notifies collaborators and refreshes the cache
+	 * so the indicators reflect the change.
+	 */
+	EditorUi.prototype.commentsUpdated = function()
+	{
+		if (this.commentsSupported())
+		{
+			var file = this.getCurrentFile();
+
+			if (file != null && file.sync != null)
+			{
+				file.sync.sendCommentsChangedMessage();
+			}
+
+			this.refreshCommentCache();
+		}
+	};
+
+	/**
+	 * Returns the number of unresolved top-level comments in the cache.
+	 */
+	EditorUi.prototype.getUnresolvedCommentCount = function()
+	{
+		var cache = this.getCommentCacheTarget().commentCache;
+		var result = 0;
+
+		if (cache != null)
+		{
+			for (var i = 0; i < cache.length; i++)
+			{
+				if (!cache[i].isResolved)
+				{
+					result++;
+				}
+			}
+		}
+
+		return result;
+	};
+
+	/**
+	 * Returns the cells for the anchor of the given comment that still
+	 * exist (empty array if the page or all cells were deleted). Also
+	 * checks non-current pages.
+	 */
+	EditorUi.prototype.getCommentAnchorCells = function(comment)
+	{
+		var ids = comment.getAnchorCellIds();
+		var result = [];
+
+		if (ids != null && ids.length > 0)
+		{
+			var pageId = comment.getAnchorPageId();
+			var page = (pageId == null) ? this.currentPage : this.getPageById(pageId);
+
+			if (page != null)
+			{
+				if (page == this.currentPage)
+				{
+					for (var i = 0; i < ids.length; i++)
+					{
+						var cell = this.editor.graph.model.getCell(ids[i]);
+
+						if (cell != null)
+						{
+							result.push(cell);
+						}
+					}
+				}
+				else
+				{
+					try
+					{
+						this.updatePageRoot(page);
+					}
+					catch (e)
+					{
+						// Treats an unparseable page like a deleted one
+						return result;
+					}
+
+					if (page.root != null)
+					{
+						var remaining = {};
+						var count = 0;
+
+						for (var i = 0; i < ids.length; i++)
+						{
+							if (!remaining[ids[i]])
+							{
+								remaining[ids[i]] = true;
+								count++;
+							}
+						}
+
+						var collect = function(cell)
+						{
+							if (count > 0)
+							{
+								if (remaining[cell.getId()])
+								{
+									remaining[cell.getId()] = false;
+									result.push(cell);
+									count--;
+								}
+
+								for (var i = 0; i < cell.getChildCount(); i++)
+								{
+									collect(cell.getChildAt(i));
+								}
+							}
+						};
+
+						collect(page.root);
+					}
+				}
+			}
+		}
+
+		return result;
+	};
+
+	/**
+	 * Navigates to the anchor of the given comment: switches the page if
+	 * needed, then selects and scrolls to the anchor cell or restores the
+	 * anchor viewport. Returns true if the anchor was found.
+	 */
+	EditorUi.prototype.gotoCommentAnchor = function(comment)
+	{
+		var pageId = comment.getAnchorPageId();
+
+		if (pageId != null && this.currentPage != null &&
+			pageId != this.currentPage.getId())
+		{
+			var page = this.getPageById(pageId);
+
+			if (page == null)
+			{
+				return false;
+			}
+
+			this.selectPage(page);
+		}
+
+		var graph = this.editor.graph;
+		var cellIds = comment.getAnchorCellIds();
+
+		if (cellIds != null && cellIds.length > 0)
+		{
+			var cells = [];
+
+			for (var i = 0; i < cellIds.length; i++)
+			{
+				var cell = graph.model.getCell(cellIds[i]);
+
+				if (cell != null)
+				{
+					cells.push(cell);
+				}
+			}
+
+			if (cells.length > 0)
+			{
+				// Cells cannot be selected in read-only mode so they are
+				// highlighted instead
+				if (graph.isEnabled())
+				{
+					graph.setSelectionCells(cells);
+				}
+				else
+				{
+					graph.highlightCells(cells, '#0071e3', 2000);
+				}
+
+				graph.scrollCellToVisible(cells[0]);
+
+				return true;
+			}
+
+			return false;
+		}
+
+		var rect = comment.getAnchorRect();
+
+		if (rect != null && rect.w > 0 && rect.h > 0)
+		{
+			graph.fitWindow(new mxRectangle(rect.x, rect.y, rect.w, rect.h), 0);
+		}
+
+		var pt = comment.getAnchorPoint();
+
+		if (pt != null)
+		{
+			// Centers the point at the current zoom and shows a short
+			// pulse marker at the location
+			var s = graph.view.scale;
+			var t = graph.view.translate;
+			var container = graph.container;
+
+			container.scrollLeft = Math.round((pt.x + t.x) * s - container.clientWidth / 2);
+			container.scrollTop = Math.round((pt.y + t.y) * s - container.clientHeight / 2);
+
+			var marker = document.createElement('div');
+			marker.className = 'geCommentAnchorMarker';
+			marker.style.left = Math.round((pt.x + t.x) * s) + 'px';
+			marker.style.top = Math.round((pt.y + t.y) * s) + 'px';
+			container.appendChild(marker);
+
+			window.setTimeout(function()
+			{
+				if (marker.parentNode != null)
+				{
+					marker.parentNode.removeChild(marker);
+				}
+			}, 2000);
+		}
+
+		return true;
+	};
+
+	/**
+	 * Adds a badge with the number of unresolved comments of the file to
+	 * the given toolbar button and keeps it up to date. Hidden at zero.
+	 */
+	EditorUi.prototype.addCommentsBadge = function(elt)
+	{
+		var badge = document.createElement('span');
+		badge.className = 'geCommentsBadge';
+		badge.style.display = 'none';
+		elt.appendChild(badge);
+
+		var update = mxUtils.bind(this, function()
+		{
+			var count = this.getUnresolvedCommentCount();
+
+			badge.style.display = (count > 0) ? '' : 'none';
+			badge.innerText = '';
+			mxUtils.write(badge, (count > 99) ? '99+' : String(count));
+		});
+
+		this.addListener('commentsChanged', update);
+		this.editor.addListener('fileLoaded', update);
+		update();
+
+		return badge;
+	};
+
+	/**
+	 * Makes the given comments toolbar button a drag source: dropping it
+	 * on a shape starts a comment anchored to that shape, dropping it on
+	 * an empty part of the canvas starts a comment anchored to that
+	 * point. Inactive for files without anchored comments.
+	 */
+	EditorUi.prototype.installCommentDragSource = function(elt)
+	{
+		var ui = this;
+
+		// Ghost shown under the pointer while dragging
+		var dragElt = document.createElement('div');
+		dragElt.style.width = '24px';
+		dragElt.style.height = '24px';
+		dragElt.style.backgroundImage = 'url(' + Editor.lightDarkCommentImage + ')';
+		dragElt.style.backgroundSize = '100% 100%';
+		dragElt.style.opacity = '0.9';
+
+		var dragSource = mxUtils.makeDraggable(elt, function()
+		{
+			return ui.editor.graph;
+		}, function(graph, evt, cell, x, y)
+		{
+			if (ui.currentPage != null && ui.menus != null &&
+				ui.menus.showCommentsWindow != null)
+			{
+				var anchor = (cell != null) ?
+					{p: ui.currentPage.getId(), c: cell.id} :
+					{p: ui.currentPage.getId(),
+						pt: {x: Math.round(x), y: Math.round(y)}};
+
+				ui.menus.showCommentsWindow(null, anchor);
+			}
+		}, dragElt);
+
+		// Mouse only: consuming the touchstart would suppress the tap on
+		// the button. Inactive for files without anchored comments.
+		var mouseDown = dragSource.mouseDown;
+
+		dragSource.mouseDown = function(evt)
+		{
+			if (mxEvent.isMouseEvent(evt) && !mxEvent.isPopupTrigger(evt) &&
+				ui.commentsSupported() && ui.anchoredCommentsSupported() &&
+				ui.canComment())
+			{
+				mouseDown.apply(this, arguments);
+			}
+		};
+
+		return dragSource;
+	};
+
+	/**
+	 * Updates the comment icons on the cells of the current page. Cells
+	 * with at least one unresolved comment anchored to them get a small
+	 * comment icon. The overlays are view-only and are never part of the
+	 * file or of exports.
+	 */
+	EditorUi.prototype.updateCommentOverlays = function()
+	{
+		var graph = this.editor.graph;
+
+		// Removes the current comment overlays (cells of a previous file
+		// are simply forgotten with the model)
+		if (this.commentOverlays != null)
+		{
+			for (var i = 0; i < this.commentOverlays.length; i++)
+			{
+				graph.removeCellOverlay(this.commentOverlays[i].cell,
+					this.commentOverlays[i].overlay);
+			}
+		}
+
+		this.commentOverlays = null;
+		var file = this.getCurrentFile();
+
+		if (file != null && file.anchoredCommentsSupported() &&
+			file.commentCache != null && !this.editor.isChromelessView())
+		{
+			var pageId = (this.currentPage != null) ? this.currentPage.getId() : null;
+			var cells = {};
+
+			for (var i = 0; i < file.commentCache.length; i++)
+			{
+				var comment = file.commentCache[i];
+				var ids = comment.getAnchorCellIds();
+
+				if (!comment.isResolved && ids != null &&
+					comment.getAnchorPageId() == pageId)
+				{
+					for (var j = 0; j < ids.length; j++)
+					{
+						cells[ids[j]] = true;
+					}
+				}
+			}
+
+			this.commentOverlays = [];
+
+			for (var id in cells)
+			{
+				(mxUtils.bind(this, function(cellId)
+				{
+					var cell = graph.model.getCell(cellId);
+
+					if (cell != null)
+					{
+						// Bottom right corner: top left and right belong to
+						// the tooltip and link icons, bottom left to the
+						// note icon
+						var overlay = new mxCellOverlay(new mxImage(
+							Editor.lightDarkCommentImage, 16, 16),
+							mxResources.get('comments'), mxConstants.ALIGN_RIGHT,
+							mxConstants.ALIGN_BOTTOM, new mxPoint(8, 8));
+						overlay.isCommentOverlay = true;
+						overlay.cursor = 'pointer';
+
+						overlay.addListener(mxEvent.CLICK, mxUtils.bind(this, function()
+						{
+							if (this.menus != null && this.menus.showCommentsWindow != null)
+							{
+								this.menus.showCommentsWindow(cellId);
+							}
+						}));
+
+						graph.addCellOverlay(cell, overlay);
+						this.commentOverlays.push({cell: cell, overlay: overlay});
+					}
+				}))(id);
+			}
+		}
 	};
 
 	/**
@@ -23490,8 +28986,15 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 {
 	var readOnly = !editorUi.canComment();
 	var canReplyToReplies = editorUi.canReplyToReplies();
+	var mentionsEnabled = editorUi.mentionsSupported();
+	var liveMentions = mentionsEnabled && editorUi.mentionsLiveSearch();
+	var freeMentions = mentionsEnabled && editorUi.freeMentionsSupported();
+	var mentionNotifications = !mentionsEnabled || editorUi.mentionNotificationsSupported();
+	var anchorsEnabled = editorUi.anchoredCommentsSupported();
+	var mentionCandidates = [];
+	var pendingScrollCell = null;
 	var curEdited = null;
-		
+
 	var div = document.createElement('div');
 	div.className = 'geCommentsWin';
 	// div.style.background = 'light-dark(whiteSmoke, ' + Editor.darkColor + ')';
@@ -23532,19 +29035,1084 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 		
 		noComments.style.display = (visibleCount == 0) ? 'block' : 'none';
 	};
-	
+
+	// Loads the people with access to the file for resolving mention
+	// tokens to names and for the composer autocompletion. With live
+	// search there is no prefetched list, names come from the parsed
+	// mention tokens instead.
+	if (mentionsEnabled && !liveMentions)
+	{
+		editorUi.getMentionCandidates(function(candidates)
+		{
+			mentionCandidates = candidates;
+
+			// Updates the chips that were rendered before the names arrived
+			var chips = listDiv.querySelectorAll('.geCommentMention[data-email]');
+
+			for (var i = 0; i < chips.length; i++)
+			{
+				chips[i].innerText = '';
+				mxUtils.write(chips[i], '@' + resolveMentionName(
+					chips[i].getAttribute('data-email')));
+			}
+		}, function()
+		{
+			// Without candidates mentions degrade to plain email tokens
+		});
+	}
+
+	function resolveMentionName(email)
+	{
+		for (var i = 0; i < mentionCandidates.length; i++)
+		{
+			if (mentionCandidates[i].email != null && email != null &&
+				mentionCandidates[i].email.toLowerCase() == email.toLowerCase())
+			{
+				return mentionCandidates[i].displayName || email;
+			}
+		}
+
+		return email;
+	};
+
+	function createMentionChip(user)
+	{
+		var chip = document.createElement('span');
+		chip.className = 'geCommentMention';
+		chip.setAttribute('data-mention', editorUi.serializeMention(user));
+
+		// Keeps the label updatable when the candidate list arrives after
+		// the chip was rendered (see getMentionCandidates above)
+		if (user.email != null)
+		{
+			chip.setAttribute('data-email', user.email);
+		}
+
+		chip.contentEditable = 'false';
+		mxUtils.write(chip, '@' + (user.displayName || ((user.email != null) ?
+			resolveMentionName(user.email) : user.id)));
+
+		return chip;
+	};
+
+	// Writes the comment content into the given element, rendering
+	// mention tokens as name chips (see EditorUi.parseMentionTokens)
+	function writeCommentText(elt, content)
+	{
+		elt.innerText = '';
+		content = (content != null) ? content : '';
+
+		if (!mentionsEnabled)
+		{
+			mxUtils.write(elt, content);
+		}
+		else
+		{
+			var segments = editorUi.parseMentionTokens(content);
+
+			for (var i = 0; i < segments.length; i++)
+			{
+				if (typeof segments[i] === 'string')
+				{
+					mxUtils.write(elt, segments[i]);
+				}
+				else
+				{
+					elt.appendChild(createMentionChip(segments[i]));
+				}
+			}
+		}
+	};
+
+	// Single-stroke icons for the anchor chips, in the style of the
+	// selector chips in the animation dialog (currentColor keeps them
+	// working in light and dark mode)
+	var anchorTargetIcon = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+		'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+		'stroke-linejoin="round" aria-hidden="true">' +
+		'<circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="1.5" ' +
+		'fill="currentColor" stroke="none"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"/></svg>';
+	var anchorPageIcon = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+		'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+		'stroke-linejoin="round" aria-hidden="true">' +
+		'<path d="M4 1.5h5.5L12.5 4.5v10h-8.5z M9.5 1.5v3h3"/></svg>';
+	var anchorPointIcon = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+		'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+		'stroke-linejoin="round" aria-hidden="true">' +
+		'<path d="M8 14.5s4.5-4.2 4.5-8a4.5 4.5 0 1 0-9 0c0 3.8 4.5 8 4.5 8z"/>' +
+		'<circle cx="8" cy="6.5" r="1.5" fill="currentColor" stroke="none"/></svg>';
+	var anchorRegionIcon = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+		'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+		'stroke-linejoin="round" aria-hidden="true">' +
+		'<rect x="2.5" y="4" width="11" height="8" rx="1" stroke-dasharray="2.6 2.2"/></svg>';
+	var anchorAttachIcon = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+		'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+		'stroke-linejoin="round" aria-hidden="true">' +
+		'<path d="M8 2v8M4.5 6.5L8 10l3.5-3.5M3 13h10"/></svg>';
+	var mentionGroupIcon = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+		'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+		'stroke-linejoin="round" aria-hidden="true">' +
+		'<circle cx="6" cy="5.5" r="2.4"/>' +
+		'<path d="M1.5 13.5c0-2.6 2-3.9 4.5-3.9s4.5 1.3 4.5 3.9"/>' +
+		'<circle cx="11.3" cy="6" r="2"/>' +
+		'<path d="M12.3 10.1c1.6.5 2.2 1.6 2.2 3.4"/></svg>';
+
+	// One-shot mode to pick an anchor on the canvas: a click sets a point,
+	// in region mode a drag frames an area. Escape or a click outside of
+	// the canvas cancels. The graph is disabled while picking so nothing
+	// is selected or moved.
+	function startAnchorPick(comment, row, editable, region)
+	{
+		var graph = editorUi.editor.graph;
+		var container = graph.container;
+		var wasEnabled = graph.isEnabled();
+		var preview = null;
+		var first = null;
+		var firstClient = null;
+		var last = null;
+		var lastClient = null;
+
+		graph.setEnabled(false);
+
+		// Dims the diagram and forces the crosshair cursor to show that
+		// a location is being picked
+		container.classList.add('geCommentAnchorPicking');
+
+		// The pick has precedence over anything under the mouse, eg. the
+		// click actions of the link and comment icons (which stop the
+		// propagation on their own nodes), so all listeners are captured
+		// at the document and gestures over the diagram are consumed
+		// before they reach the icons or the graph
+		var pickEvents = (mxClient.IS_POINTER) ?
+			{down: ['pointerdown'], move: ['pointermove'], up: ['pointerup']} :
+			{down: ['mousedown', 'touchstart'], move: ['mousemove', 'touchmove'],
+			up: ['mouseup', 'touchend']};
+
+		function forEachPickEvent(fn)
+		{
+			for (var kind in pickEvents)
+			{
+				for (var i = 0; i < pickEvents[kind].length; i++)
+				{
+					fn(pickEvents[kind][i], (kind == 'down') ? down :
+						((kind == 'move') ? move : up));
+				}
+			}
+		};
+
+		// Swallows the click that the browser fires after the final
+		// gesture so the icons under the mouse are not activated
+		var clickBlocker = function(evt)
+		{
+			if (container.contains(mxEvent.getSource(evt)))
+			{
+				mxEvent.consume(evt);
+			}
+		};
+
+		function toGraphPoint(evt)
+		{
+			var pt = mxUtils.convertPoint(container,
+				mxEvent.getClientX(evt), mxEvent.getClientY(evt));
+
+			return new mxPoint(pt.x / graph.view.scale - graph.view.translate.x,
+				pt.y / graph.view.scale - graph.view.translate.y);
+		};
+
+		function cleanUp()
+		{
+			forEachPickEvent(function(name, handler)
+			{
+				document.removeEventListener(name, handler, true);
+			});
+
+			// Captured so Escape only ends the picking, not the composer
+			document.removeEventListener('keydown', keyHandler, true);
+
+			// The suppressed click of the final gesture fires after the
+			// mouseup so the blocker is removed deferred
+			window.setTimeout(function()
+			{
+				document.removeEventListener('click', clickBlocker, true);
+			}, 0);
+
+			container.classList.remove('geCommentAnchorPicking');
+			graph.setEnabled(wasEnabled);
+
+			if (preview != null && preview.parentNode != null)
+			{
+				preview.parentNode.removeChild(preview);
+			}
+		};
+
+		function finish(anchor)
+		{
+			cleanUp();
+
+			if (anchor != null)
+			{
+				comment.anchor = anchor;
+				renderAnchorRow(comment, row, editable);
+			}
+		};
+
+		var keyHandler = function(evt)
+		{
+			if (evt.keyCode == 27 /* Escape */)
+			{
+				finish(null);
+				mxEvent.consume(evt);
+			}
+		};
+
+		var down = function(evt)
+		{
+			// A gesture outside of the diagram cancels the mode
+			if (!container.contains(mxEvent.getSource(evt)))
+			{
+				finish(null);
+
+				return;
+			}
+
+			first = toGraphPoint(evt);
+			firstClient = new mxPoint(mxEvent.getClientX(evt), mxEvent.getClientY(evt));
+
+			if (region)
+			{
+				preview = document.createElement('div');
+				preview.className = 'geCommentAnchorPickPreview';
+				container.appendChild(preview);
+			}
+
+			mxEvent.consume(evt);
+		};
+
+		var move = function(evt)
+		{
+			if (first != null)
+			{
+				last = toGraphPoint(evt);
+				lastClient = new mxPoint(mxEvent.getClientX(evt), mxEvent.getClientY(evt));
+
+				if (preview != null)
+				{
+					var s = graph.view.scale;
+					var t = graph.view.translate;
+
+					preview.style.left = Math.round((Math.min(first.x, last.x) + t.x) * s) + 'px';
+					preview.style.top = Math.round((Math.min(first.y, last.y) + t.y) * s) + 'px';
+					preview.style.width = Math.round(Math.abs(last.x - first.x) * s) + 'px';
+					preview.style.height = Math.round(Math.abs(last.y - first.y) * s) + 'px';
+					mxEvent.consume(evt);
+				}
+			}
+		};
+
+		var up = function(evt)
+		{
+			if (first == null)
+			{
+				return;
+			}
+
+			if (editorUi.currentPage == null)
+			{
+				finish(null);
+
+				return;
+			}
+
+			var pageId = editorUi.currentPage.getId();
+
+			if (!region)
+			{
+				finish({p: pageId, pt: {x: Math.round(first.x), y: Math.round(first.y)}});
+			}
+			else
+			{
+				// touchend has no coordinates so the last move wins
+				var cur = last;
+				var curClient = lastClient;
+
+				try
+				{
+					cur = toGraphPoint(evt);
+					curClient = new mxPoint(mxEvent.getClientX(evt), mxEvent.getClientY(evt));
+				}
+				catch (e)
+				{
+					// ignore
+				}
+
+				// Drags below the click threshold cancel the mode
+				if (cur == null || curClient == null ||
+					(Math.abs(curClient.x - firstClient.x) < 4 &&
+					Math.abs(curClient.y - firstClient.y) < 4))
+				{
+					finish(null);
+				}
+				else
+				{
+					finish({p: pageId, r: {
+						x: Math.round(Math.min(first.x, cur.x)),
+						y: Math.round(Math.min(first.y, cur.y)),
+						w: Math.round(Math.abs(cur.x - first.x)),
+						h: Math.round(Math.abs(cur.y - first.y))}});
+				}
+			}
+
+			mxEvent.consume(evt);
+		};
+
+		// Deferred so the click that started the mode is not captured
+		window.setTimeout(function()
+		{
+			forEachPickEvent(function(name, handler)
+			{
+				document.addEventListener(name, handler, true);
+			});
+
+			document.addEventListener('click', clickBlocker, true);
+			document.addEventListener('keydown', keyHandler, true);
+		}, 0);
+	};
+
+	// Clips anchor chip labels to a reasonable length
+	function clipAnchorLabel(label)
+	{
+		label = (label != null) ? mxUtils.trim(label.replace(/\s+/g, ' ')) : '';
+
+		if (label.length > 25)
+		{
+			label = label.substring(0, 25) + '…';
+		}
+
+		return label;
+	};
+
+	// Returns the plain text label of the given cell for the anchor chip.
+	// getLabel resolves placeholders like the rendered label on the canvas.
+	function getAnchorCellLabel(cell)
+	{
+		var label = '';
+
+		try
+		{
+			var value = editorUi.editor.graph.getLabel(cell);
+
+			if (typeof value === 'string')
+			{
+				label = Editor.convertHtmlToText(value);
+			}
+		}
+		catch (e)
+		{
+			// ignore
+		}
+
+		return clipAnchorLabel(label) || mxResources.get('shape');
+	};
+
+	// Renders the anchor chips of the given comment into row: a chip that
+	// jumps to the shape, page or viewport the comment is attached to and,
+	// while composing, a menu chip to attach the selected shape, the
+	// current page or the current viewport, and a control to remove the
+	// anchor before saving (stored anchors are immutable in the APIs)
+	function renderAnchorRow(comment, row, editable)
+	{
+		row.innerText = '';
+		row.style.display = '';
+
+		function addRemoveControl(chip)
+		{
+			if (editable)
+			{
+				var removeElt = document.createElement('span');
+				removeElt.className = 'geCommentAnchorRemove';
+				removeElt.setAttribute('title', mxResources.get('remove'));
+				mxUtils.write(removeElt, '×');
+
+				mxEvent.addListener(removeElt, 'click', function(evt)
+				{
+					comment.anchor = null;
+					renderAnchorRow(comment, row, editable);
+					evt.preventDefault();
+					mxEvent.consume(evt);
+				});
+
+				chip.appendChild(removeElt);
+			}
+		};
+
+		function addJumpChip(icon, labelText, title, deleted)
+		{
+			var chip = document.createElement((!deleted) ? 'a' : 'span');
+			chip.className = 'geCommentAnchorChip' +
+				((deleted) ? ' geCommentAnchorChipDeleted' : '');
+			chip.innerHTML = icon;
+
+			var label = document.createElement('span');
+			mxUtils.write(label, labelText);
+			chip.appendChild(label);
+
+			if (!deleted)
+			{
+				if (title != null)
+				{
+					chip.setAttribute('title', title);
+				}
+
+				mxEvent.addListener(chip, 'click', function(evt)
+				{
+					editorUi.gotoCommentAnchor(comment);
+					evt.preventDefault();
+					mxEvent.consume(evt);
+				});
+			}
+
+			addRemoveControl(chip);
+			row.appendChild(chip);
+		};
+
+		if (comment.getAnchorCellId() != null)
+		{
+			var cells = editorUi.getCommentAnchorCells(comment);
+			var chipLabel = null;
+			var chipTitle = null;
+
+			if (cells.length == 0)
+			{
+				chipLabel = mxResources.get('shapeDeleted');
+			}
+			else if (cells.length == 1)
+			{
+				chipLabel = getAnchorCellLabel(cells[0]);
+				chipTitle = mxResources.get('shape');
+			}
+			else
+			{
+				// Multiple cells are labelled with their count like the
+				// selector chips in the animation dialog
+				chipLabel = cells.length + ' ' + mxResources.get('cells');
+				var labels = [];
+
+				for (var i = 0; i < cells.length; i++)
+				{
+					labels.push(getAnchorCellLabel(cells[i]));
+				}
+
+				chipTitle = labels.join('\n');
+			}
+
+			addJumpChip(anchorTargetIcon, chipLabel, chipTitle, cells.length == 0);
+		}
+		else if (comment.getAnchorPageId() != null)
+		{
+			var page = editorUi.getPageById(comment.getAnchorPageId());
+			var icon = anchorPageIcon;
+			var kind = null;
+
+			if (comment.getAnchorRect() != null)
+			{
+				icon = anchorRegionIcon;
+				kind = 'area';
+			}
+			else if (comment.getAnchorPoint() != null)
+			{
+				icon = anchorPointIcon;
+				kind = 'point';
+			}
+
+			// Point and area chips are labelled by their kind, page chips
+			// by the page name (which is shown as the tooltip otherwise)
+			var chipLabel = (page == null) ? mxResources.get('pageNotFound') :
+				((kind != null) ? mxResources.get(kind) :
+				(clipAnchorLabel(page.getName()) || mxResources.get('page')));
+
+			addJumpChip(icon, chipLabel, (page != null) ?
+				(page.getName() || mxResources.get('page')) : null, page == null);
+		}
+		else if (editable && editorUi.currentPage != null)
+		{
+			// Menu to attach the comment to the selected shape, the
+			// current page or the current viewport. Requires a current
+			// page, eg. headless UIs used by integrations have none.
+			var attach = document.createElement('a');
+			attach.className = 'geCommentAnchorChip geCommentAnchorAttach';
+			attach.setAttribute('title', mxResources.get('attach'));
+			attach.innerHTML = anchorAttachIcon;
+
+			var label = document.createElement('span');
+			mxUtils.write(label, mxResources.get('attach'));
+			attach.appendChild(label);
+
+			var menuDiv = null;
+			var downHandler = null;
+
+			function hideAttachMenu()
+			{
+				if (menuDiv != null && menuDiv.parentNode != null)
+				{
+					menuDiv.parentNode.removeChild(menuDiv);
+				}
+
+				menuDiv = null;
+
+				if (downHandler != null)
+				{
+					mxEvent.removeListener(document, 'mousedown', downHandler);
+					downHandler = null;
+				}
+			};
+
+			function addAttachOption(icon, labelText, fn)
+			{
+				var opt = document.createElement('div');
+				opt.className = 'geCommentMentionRow';
+				opt.innerHTML = icon;
+
+				var optLabel = document.createElement('span');
+				mxUtils.write(optLabel, labelText);
+				opt.appendChild(optLabel);
+
+				mxEvent.addListener(opt, 'mousedown', function(evt)
+				{
+					hideAttachMenu();
+					fn();
+					renderAnchorRow(comment, row, editable);
+					evt.preventDefault();
+					mxEvent.consume(evt);
+				});
+
+				menuDiv.appendChild(opt);
+			};
+
+			mxEvent.addListener(attach, 'click', function(evt)
+			{
+				if (menuDiv != null)
+				{
+					hideAttachMenu();
+				}
+				else if (editorUi.currentPage != null)
+				{
+					var graph = editorUi.editor.graph;
+					var pageId = editorUi.currentPage.getId();
+					menuDiv = document.createElement('div');
+					menuDiv.className = 'geCommentMentionMenu';
+
+					if (graph.getSelectionCount() == 1)
+					{
+						addAttachOption(anchorTargetIcon,
+							getAnchorCellLabel(graph.getSelectionCell()), function()
+						{
+							comment.anchor = {p: pageId, c: graph.getSelectionCell().id};
+						});
+					}
+					else if (graph.getSelectionCount() > 1)
+					{
+						addAttachOption(anchorTargetIcon, graph.getSelectionCount() +
+							' ' + mxResources.get('cells'), function()
+						{
+							var cells = graph.getSelectionCells();
+							var ids = [];
+
+							for (var i = 0; i < cells.length; i++)
+							{
+								ids.push(cells[i].id);
+							}
+
+							comment.anchor = {p: pageId, c: ids};
+						});
+					}
+
+					addAttachOption(anchorPointIcon, mxResources.get('point') + '…', function()
+					{
+						startAnchorPick(comment, row, editable, false);
+					});
+
+					addAttachOption(anchorRegionIcon, mxResources.get('area') + '…', function()
+					{
+						startAnchorPick(comment, row, editable, true);
+					});
+
+					addAttachOption(anchorPageIcon, mxResources.get('currentPage'), function()
+					{
+						comment.anchor = {p: pageId};
+					});
+
+					menuDiv.style.left = attach.offsetLeft + 'px';
+					menuDiv.style.top = (attach.offsetTop + attach.offsetHeight + 2) + 'px';
+					row.parentNode.insertBefore(menuDiv, row.nextSibling);
+
+					// Closes the menu on clicks outside of it
+					downHandler = function(evt2)
+					{
+						var source = mxEvent.getSource(evt2);
+
+						if (menuDiv != null && source != attach && !attach.contains(source) &&
+							!menuDiv.contains(source))
+						{
+							hideAttachMenu();
+						}
+					};
+
+					mxEvent.addListener(document, 'mousedown', downHandler);
+				}
+
+				evt.preventDefault();
+				mxEvent.consume(evt);
+			});
+
+			row.appendChild(attach);
+		}
+		else
+		{
+			row.style.display = 'none';
+		}
+	};
+
+	// Returns the content of the given comment editor. Mention chips are
+	// serialized as the backend's mention tokens (see
+	// EditorUi.serializeMention) which the backend turns into
+	// notifications for the mentioned people
+	function getCommentEditorValue(elt)
+	{
+		if (elt.nodeName == 'TEXTAREA')
+		{
+			return elt.value;
+		}
+		else
+		{
+			var result = [];
+
+			var walk = function(node)
+			{
+				for (var child = node.firstChild; child != null; child = child.nextSibling)
+				{
+					if (child.nodeType == 3)
+					{
+						result.push(child.nodeValue);
+					}
+					else if (child.nodeType == 1)
+					{
+						if (child.nodeName == 'BR')
+						{
+							result.push('\n');
+						}
+						else if (child.getAttribute != null &&
+							child.getAttribute('data-mention') != null)
+						{
+							result.push(child.getAttribute('data-mention'));
+						}
+						else
+						{
+							// Block elements start a new line (contenteditable
+							// wraps lines in divs)
+							if ((child.nodeName == 'DIV' || child.nodeName == 'P') &&
+								result.length > 0 && result[result.length - 1] != '\n' &&
+								!/\n$/.test(result[result.length - 1]))
+							{
+								result.push('\n');
+							}
+
+							walk(child);
+						}
+					}
+				}
+			};
+
+			walk(elt);
+
+			return result.join('').replace(/\u00a0/g, ' ');
+		}
+	};
+
+	// Adds the @mention autocompletion to the given contenteditable editor
+	function installMentionHandler(elt)
+	{
+		var menuDiv = null;
+		var selected = 0;
+		var matches = [];
+		var current = null;
+		var searchThread = null;
+		var noNotifyHint = null;
+
+		// Backends that cannot notify mentioned people disclose that in
+		// the composer when the first mention is inserted
+		function showNoNotifyHint()
+		{
+			if (!mentionNotifications && noNotifyHint == null)
+			{
+				noNotifyHint = document.createElement('div');
+				noNotifyHint.style.cssText = 'font-size:11px;opacity:0.7;padding:2px 0;';
+				mxUtils.write(noNotifyHint, mxResources.get('mentionNoNotify',
+					null, 'People you mention are not notified'));
+				elt.parentNode.insertBefore(noNotifyHint, elt.nextSibling);
+			}
+		};
+
+		function hideMenu()
+		{
+			if (menuDiv != null && menuDiv.parentNode != null)
+			{
+				menuDiv.parentNode.removeChild(menuDiv);
+			}
+
+			menuDiv = null;
+			current = null;
+		};
+
+		// Finds an @query between an @ and the caret in the current text node
+		function findQuery()
+		{
+			var sel = window.getSelection();
+
+			if (sel == null || sel.rangeCount == 0)
+			{
+				return null;
+			}
+
+			var range = sel.getRangeAt(0);
+
+			if (!range.collapsed || range.startContainer.nodeType != 3 ||
+				!elt.contains(range.startContainer))
+			{
+				return null;
+			}
+
+			var text = range.startContainer.nodeValue.substring(0, range.startOffset);
+
+			// The last @ after a whitespace or the start of the text. The
+			// query may contain another @ for typing complete addresses.
+			var match = /(^|[\s\u00a0])@([^\s\u00a0]*)$/.exec(text);
+
+			if (match == null)
+			{
+				return null;
+			}
+
+			return {node: range.startContainer, start: match.index + match[1].length,
+				end: range.startOffset, query: match[2]};
+		};
+
+		function applyMention(candidate)
+		{
+			if (current == null)
+			{
+				return;
+			}
+
+			var node = current.node;
+			var rest = node.nodeValue.substring(current.end);
+			node.nodeValue = node.nodeValue.substring(0, current.start);
+
+			var chip = createMentionChip(candidate);
+			var space = document.createTextNode('\u00a0' + rest);
+			node.parentNode.insertBefore(chip, node.nextSibling);
+			chip.parentNode.insertBefore(space, chip.nextSibling);
+			showNoNotifyHint();
+
+			var sel = window.getSelection();
+			var range = document.createRange();
+			range.setStart(space, 1);
+			range.collapse(true);
+			sel.removeAllRanges();
+			sel.addRange(range);
+
+			hideMenu();
+		};
+
+		function updateMenu()
+		{
+			current = findQuery();
+
+			if (current == null)
+			{
+				hideMenu();
+
+				return;
+			}
+
+			if (liveMentions)
+			{
+				// Debounced server-side search, results are shown unfiltered.
+				// Responses for a query that is no longer current are dropped.
+				if (searchThread != null)
+				{
+					window.clearTimeout(searchThread);
+				}
+
+				searchThread = window.setTimeout(function()
+				{
+					searchThread = null;
+
+					if (current == null)
+					{
+						return;
+					}
+
+					var query = current.query;
+
+					editorUi.getMentionCandidates(function(candidates)
+					{
+						if (current != null && current.query == query)
+						{
+							showMenu(candidates.slice(0, 6));
+						}
+					}, function()
+					{
+						// Keeps the previous menu on search errors
+					}, query);
+				}, 300);
+
+				return;
+			}
+
+			var query = current.query.toLowerCase();
+			var newMatches = [];
+
+			for (var i = 0; i < mentionCandidates.length && newMatches.length < 6; i++)
+			{
+				var cand = mentionCandidates[i];
+
+				if (query.length == 0 ||
+					(cand.displayName != null && cand.displayName.toLowerCase().indexOf(query) >= 0) ||
+					(cand.email != null && cand.email.toLowerCase().indexOf(query) >= 0))
+				{
+					newMatches.push(cand);
+				}
+			}
+
+			// Offers a complete typed address as a mention target, eg. for
+			// people with access via a domain-wide share
+			if (freeMentions &&
+				/^[A-Za-z0-9.!#$%&'*/=?^_`{|}~+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/.test(current.query))
+			{
+				var exists = false;
+
+				for (var i = 0; i < newMatches.length; i++)
+				{
+					if (newMatches[i].email != null &&
+						newMatches[i].email.toLowerCase() == query)
+					{
+						exists = true;
+						break;
+					}
+				}
+
+				if (!exists)
+				{
+					newMatches.push({email: current.query});
+				}
+			}
+
+			showMenu(newMatches);
+		};
+
+		function showMenu(newMatches)
+		{
+			matches = newMatches;
+
+			if (matches.length == 0)
+			{
+				hideMenu();
+
+				return;
+			}
+
+			selected = Math.min(selected, matches.length - 1);
+
+			if (menuDiv == null)
+			{
+				menuDiv = document.createElement('div');
+				menuDiv.className = 'geCommentMentionMenu';
+				elt.parentNode.insertBefore(menuDiv, elt.nextSibling);
+			}
+
+			menuDiv.style.left = elt.offsetLeft + 'px';
+			menuDiv.style.top = (elt.offsetTop + elt.offsetHeight) + 'px';
+			menuDiv.innerText = '';
+
+			for (var i = 0; i < matches.length; i++)
+			{
+				(function(cand, index)
+				{
+					var row = document.createElement('div');
+					row.className = 'geCommentMentionRow' +
+						((index == selected) ? ' geCommentMentionRowSelected' : '');
+
+					var img = null;
+
+					if (cand.pictureUrl == null && cand.isGroup)
+					{
+						img = document.createElement('span');
+						img.className = 'geCommentMentionImg';
+						img.innerHTML = mentionGroupIcon;
+					}
+					else
+					{
+						img = document.createElement('img');
+						img.className = 'geCommentMentionImg';
+						img.src = (cand.pictureUrl != null) ? cand.pictureUrl : Editor.userImage;
+					}
+
+					row.appendChild(img);
+
+					var name = document.createElement('span');
+					mxUtils.write(name, cand.displayName || cand.email);
+					row.appendChild(name);
+
+					if (cand.isGroup)
+					{
+						var groupTag = document.createElement('span');
+						groupTag.className = 'geCommentMentionGroupTag';
+						mxUtils.write(groupTag, mxResources.get('group'));
+						row.appendChild(groupTag);
+					}
+
+					if (cand.displayName != null && cand.email != null)
+					{
+						var mail = document.createElement('span');
+						mail.className = 'geCommentMentionMail';
+						mxUtils.write(mail, cand.email);
+						row.appendChild(mail);
+					}
+
+					// mousedown keeps the selection in the editor alive
+					mxEvent.addListener(row, 'mousedown', function(evt)
+					{
+						applyMention(cand);
+						evt.preventDefault();
+						mxEvent.consume(evt);
+					});
+
+					menuDiv.appendChild(row);
+				})(matches[i], i);
+			}
+		};
+
+		mxEvent.addListener(elt, 'keydown', function(evt)
+		{
+			if (menuDiv != null && !mxEvent.isConsumed(evt))
+			{
+				if (evt.keyCode == 40 /* Down */ || evt.keyCode == 38 /* Up */)
+				{
+					selected = (selected + ((evt.keyCode == 40) ? 1 : matches.length - 1)) %
+						matches.length;
+					updateMenu();
+					evt.preventDefault();
+					mxEvent.consume(evt);
+				}
+				else if ((evt.keyCode == 13 /* Enter */ || evt.keyCode == 9 /* Tab */) &&
+					!mxEvent.isControlDown(evt) && !mxEvent.isMetaDown(evt))
+				{
+					applyMention(matches[selected]);
+					evt.preventDefault();
+					mxEvent.consume(evt);
+				}
+				else if (evt.keyCode == 27 /* Escape */)
+				{
+					hideMenu();
+					evt.preventDefault();
+					mxEvent.consume(evt);
+				}
+			}
+		});
+
+		mxEvent.addListener(elt, 'input', updateMenu);
+
+		mxEvent.addListener(elt, 'keyup', function(evt)
+		{
+			// Caret moves do not fire input events
+			if (evt.keyCode == 37 || evt.keyCode == 39 ||
+				evt.keyCode == 35 || evt.keyCode == 36)
+			{
+				updateMenu();
+			}
+		});
+
+		mxEvent.addListener(elt, 'blur', function()
+		{
+			// Deferred so a click on a row is applied first
+			window.setTimeout(hideMenu, 200);
+		});
+
+		// Pastes as plain text so no markup enters the composer
+		mxEvent.addListener(elt, 'paste', function(evt)
+		{
+			evt.preventDefault();
+			var text = (evt.clipboardData != null) ?
+				evt.clipboardData.getData('text/plain') : null;
+
+			if (text != null && text.length > 0)
+			{
+				document.execCommand('insertText', false, text);
+			}
+		});
+	};
+
+	// Returns a new comment editor, a textarea or, with mentions enabled,
+	// a contenteditable element that supports mention chips
+	function createCommentEditor(content, minHeight)
+	{
+		var elt = null;
+
+		if (!mentionsEnabled)
+		{
+			elt = document.createElement('textarea');
+			elt.value = content;
+		}
+		else
+		{
+			elt = document.createElement('div');
+			elt.contentEditable = true;
+			writeCommentText(elt, content);
+			installMentionHandler(elt);
+		}
+
+		elt.className = 'geCommentEditTxtArea';
+		elt.style.minHeight = minHeight + 'px';
+
+		return elt;
+	};
+
 	function editComment(comment, cdiv, saveCallback, deleteOnCancel)
 	{
 		curEdited = {div: cdiv, comment: comment, saveCallback: saveCallback, deleteOnCancel: deleteOnCancel};
-		
+
 		var commentTxt = cdiv.querySelector('.geCommentTxt');
 		var actionsDiv = cdiv.querySelector('.geCommentActionsList');
-		
-		var textArea = document.createElement('textarea');
-		textArea.className = 'geCommentEditTxtArea';
-		textArea.style.minHeight = commentTxt.offsetHeight + 'px';
-		textArea.value = comment.content;
+
+		// Removes the editor of a previous edit of this comment, eg. when
+		// the list was refreshed while the comment was being edited
+		var oldEditors = cdiv.querySelectorAll(
+			'.geCommentEditTxtArea, .geCommentEditBtns, .geCommentAnchorRowEdit');
+
+		for (var i = 0; i < oldEditors.length; i++)
+		{
+			if (oldEditors[i].parentNode == cdiv)
+			{
+				cdiv.removeChild(oldEditors[i]);
+			}
+		}
+
+		var textArea = createCommentEditor(comment.content, commentTxt.offsetHeight);
 		cdiv.insertBefore(textArea, commentTxt);
+
+		// Chip to attach the comment to the selected shape, the current
+		// page or the current viewport, to jump to the anchor and to
+		// remove it. Only while composing a new comment as anchors are
+		// immutable once stored.
+		var anchorRow = null;
+
+		if (anchorsEnabled && comment.id == null && comment.pCommentId == null)
+		{
+			anchorRow = document.createElement('div');
+			anchorRow.className = 'geCommentAnchorRow geCommentAnchorRowEdit';
+			renderAnchorRow(comment, anchorRow, true);
+			cdiv.insertBefore(anchorRow, commentTxt);
+		}
 		
 		var btnDiv = document.createElement('div');
 		btnDiv.className = 'geCommentEditBtns';
@@ -23568,7 +30136,7 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 			{
 				reset();
 			}
-			
+
 			curEdited = null;
 		});
 		
@@ -23577,10 +30145,16 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 		
 		var saveBtn = mxUtils.button(mxResources.get('save'), function()
 		{
-			commentTxt.innerText = '';
-			comment.content = textArea.value;
-			mxUtils.write(commentTxt, comment.content);
+			comment.content = getCommentEditorValue(textArea);
+			writeCommentText(commentTxt, comment.content);
 			reset();
+
+			// The anchor is immutable once the comment is stored
+			if (anchorRow != null)
+			{
+				renderAnchorRow(comment, anchorRow, false);
+			}
+
 			saveCallback(comment);
 			curEdited = null;
 		});
@@ -23707,9 +30281,29 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 		headerTxt.appendChild(dateDiv);
 		cdiv.appendChild(headerDiv);
 		
+		// Shows a chip that jumps to the anchor on anchored comments (the
+		// chip while composing is added by editComment)
+		if (anchorsEnabled && level == 0 && comment.getAnchorCellId != null &&
+			comment.anchor != null)
+		{
+			if (comment.getAnchorCellIds() != null)
+			{
+				cdiv.setAttribute('data-anchor-cell',
+					comment.getAnchorCellIds().join(','));
+			}
+
+			if (comment.id != null)
+			{
+				var anchorRow = document.createElement('div');
+				anchorRow.className = 'geCommentAnchorRow';
+				renderAnchorRow(comment, anchorRow, false);
+				cdiv.appendChild(anchorRow);
+			}
+		}
+
 		var commentTxtDiv = document.createElement('div');
 		commentTxtDiv.className = 'geCommentTxt';
-		mxUtils.write(commentTxtDiv, comment.content || '');
+		writeCommentText(commentTxtDiv, comment.content);
 		cdiv.appendChild(commentTxtDiv);
 		
 		if (comment.isLocked)
@@ -23788,9 +30382,10 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 					newReply.id = id;
 					comment.replies.push(newReply);
 					showDone(replyComment);
-					
+
 					if (saveCallback) saveCallback();
-					
+
+					editorUi.commentsUpdated();
 				}, function(err)
 				{
 					doEdit();
@@ -23843,6 +30438,7 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 						comment.editComment(comment.content, function()
 						{
 							showDone(cdiv);
+							editorUi.commentsUpdated();
 						}, function(err)
 						{
 							showError(cdiv);
@@ -23900,6 +30496,8 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 							
 							noComments.style.display = (listDiv.getElementsByTagName('div').length == 0) ? 'block' : 'none';
 						}
+
+						editorUi.commentsUpdated();
 					}, function(err)
 					{
 						showError(cdiv);
@@ -23997,43 +30595,58 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 		return cdiv;
 	};
 
+	// Starts composing a new comment, optionally anchored to a shape
+	var startNewComment = mxUtils.bind(this, function(anchor)
+	{
+		if (readOnly)
+		{
+			return;
+		}
+
+		var newComment = editorUi.newComment('', editorUi.getCurrentUser());
+		newComment.anchor = (anchor != null) ? anchor : null;
+		var newCommentDiv = addComment(newComment, comments, null, 0);
+
+		function doAddComment()
+		{
+			editComment(newComment, newCommentDiv, function(newComment)
+			{
+				showBusy(newCommentDiv);
+
+				editorUi.addComment(newComment, function(id)
+				{
+					newComment.id = id;
+					comments.push(newComment);
+					showDone(newCommentDiv);
+					editorUi.commentsUpdated();
+				}, function(err)
+				{
+					showError(newCommentDiv);
+					doAddComment();
+					editorUi.handleError(err, null, null, null,
+						mxUtils.htmlEntities(mxResources.get('objectNotFound')));
+				});
+			}, true);
+		}
+
+		doAddComment();
+	});
+
+	this.startNewComment = startNewComment;
+
 	if (!readOnly)
 	{
 		var addLink = link.cloneNode();
 		addLink.style.backgroundImage = 'url(' + Editor.plusImage + ')';
 		addLink.setAttribute('title', mxResources.get('create') + '...');
-		
+
 		mxEvent.addListener(addLink, 'click', function(evt)
 		{
-			var newComment = editorUi.newComment('', editorUi.getCurrentUser());
-			var newCommentDiv = addComment(newComment, comments, null, 0);
-			
-			function doAddComment()
-			{
-				editComment(newComment, newCommentDiv, function(newComment)
-				{
-					showBusy(newCommentDiv);
-					
-					editorUi.addComment(newComment, function(id)
-					{
-						newComment.id = id;
-						comments.push(newComment);
-						showDone(newCommentDiv);
-					}, function(err)
-					{
-						showError(newCommentDiv);
-						doAddComment();
-						editorUi.handleError(err, null, null, null,
-							mxUtils.htmlEntities(mxResources.get('objectNotFound')));
-					});
-				}, true);
-			}
-			
-			doAddComment();
+			startNewComment();
 			evt.preventDefault();
 			mxEvent.consume(evt);
 		});
-		
+
 		ldiv.appendChild(addLink);
 	}
 
@@ -24101,10 +30714,106 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 
 	var comments = [];
 
+	// Scrolls to the first comment anchored to the given cell. The target
+	// is kept for the next render unless clear is set.
+	var applyPendingScroll = function(clear)
+	{
+		if (pendingScrollCell != null)
+		{
+			var children = listDiv.childNodes;
+
+			for (var i = 0; i < children.length; i++)
+			{
+				if (children[i].getAttribute != null &&
+					children[i].getAttribute('data-anchor-cell') != null &&
+					mxUtils.indexOf(children[i].getAttribute('data-anchor-cell').split(','),
+						pendingScrollCell) >= 0)
+				{
+					listDiv.scrollTop = children[i].offsetTop - listDiv.offsetTop;
+					pendingScrollCell = null;
+
+					break;
+				}
+			}
+
+			if (clear)
+			{
+				pendingScrollCell = null;
+			}
+		}
+	};
+
+	this.scrollToCell = function(cellId)
+	{
+		pendingScrollCell = cellId;
+		applyPendingScroll(false);
+	};
+
+	// Renders the given comments, preserving the scroll position and a
+	// comment that is currently being composed or edited
+	var renderComments = mxUtils.bind(this, function(list)
+	{
+		function sortReplies(replies)
+		{
+			if (replies != null)
+			{
+				//Sort replies old to new
+				replies.sort(function(r1, r2)
+				{
+					return new Date(r1.modifiedDate) - new Date(r2.modifiedDate);
+				});
+
+				for (var i = 0; i < replies.length; i++)
+				{
+					sortReplies(replies[i].replies);
+				}
+			}
+		};
+
+		//Sort comments old to new
+		list.sort(function(c1, c2)
+		{
+			return new Date(c1.modifiedDate) - new Date(c2.modifiedDate);
+		});
+
+		// Keeps the text of a composer that is still in the list
+		if (curEdited != null)
+		{
+			var editorElt = curEdited.div.querySelector('.geCommentEditTxtArea');
+
+			if (editorElt != null)
+			{
+				curEdited.comment.content = getCommentEditorValue(editorElt);
+			}
+		}
+
+		var scrollTop = listDiv.scrollTop;
+		listDiv.innerText = '';
+		listDiv.appendChild(noComments);
+		noComments.style.display = 'block';
+		comments = list;
+
+		for (var i = 0; i < comments.length; i++)
+		{
+			sortReplies(comments[i].replies);
+			addComment(comments[i], comments, null, 0, resolvedChecked);
+		}
+
+		//New comment case
+		if (curEdited != null && curEdited.comment.id == null && curEdited.comment.pCommentId == null)
+		{
+			listDiv.appendChild(curEdited.div);
+			editComment(curEdited.comment, curEdited.div, curEdited.saveCallback, curEdited.deleteOnCancel);
+		}
+
+		listDiv.scrollTop = scrollTop;
+		applyPendingScroll(true);
+	});
+
 	var refresh = mxUtils.bind(this, function()
 	{
 		this.hasError = false;
-		
+
 		if (curEdited != null)
 		{
 			try
@@ -24112,8 +30821,8 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 				curEdited.div = curEdited.div.cloneNode(true);
 				var commentEditTxt = curEdited.div.querySelector('.geCommentEditTxtArea');
 				var commentEditBtns = curEdited.div.querySelector('.geCommentEditBtns');
-				
-				curEdited.comment.content = commentEditTxt.value;
+
+				curEdited.comment.content = getCommentEditorValue(commentEditTxt);
 				commentEditTxt.parentNode.removeChild(commentEditTxt);
 				commentEditBtns.parentNode.removeChild(commentEditBtns);
 			}
@@ -24122,61 +30831,45 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 				editorUi.handleError(e);
 			}
 		}
-		
-		listDiv.innerHTML = '<div style="padding-top:10px;text-align:center;"><img src="' + IMAGE_PATH + '/spin.gif" valign="middle"> ' +
-			mxUtils.htmlEntities(mxResources.get('loading')) + '...</div>';
-		
+
 		canReplyToReplies = editorUi.canReplyToReplies();
-		
+
 		if (editorUi.commentsSupported())
 		{
-			editorUi.getComments(function(list)
+			// Shows the cached comments immediately and refreshes them in
+			// the background (rendered via the commentsChanged event). With
+			// a composer open the current list is kept and rendered once
+			// after the refresh to not re-attach the composer twice.
+			if (editorUi.getCommentCacheTarget().commentCache != null)
 			{
-				function sortReplies(replies)
+				if (curEdited == null)
 				{
-					if (replies != null)
-					{
-						//Sort replies old to new
-						replies.sort(function(r1, r2)
-						{
-							return new Date(r1.modifiedDate) - new Date(r2.modifiedDate);
-						});
-						
-						for (var i = 0; i < replies.length; i++)
-						{
-							sortReplies(replies[i].replies);
-						}						
-					}
-				};
-				
-				//Sort comments old to new
-				list.sort(function(c1, c2)
-				{
-					return new Date(c1.modifiedDate) - new Date(c2.modifiedDate);
-				});
+					renderComments(editorUi.getCommentCacheTarget().commentCache);
+				}
+			}
+			else
+			{
+				listDiv.innerHTML = '<div style="padding-top:10px;text-align:center;"><img src="' + IMAGE_PATH + '/spin.gif" valign="middle"> ' +
+					mxUtils.htmlEntities(mxResources.get('loading')) + '...</div>';
+			}
 
-				listDiv.innerText = '';
-				listDiv.appendChild(noComments);
-				noComments.style.display = 'block';
-				comments = list;
-				
-				for (var i = 0; i < comments.length; i++)
-				{
-					sortReplies(comments[i].replies);
-					addComment(comments[i], comments, null, 0, resolvedChecked);
-				}
-				
-				//New comment case
-				if (curEdited != null && curEdited.comment.id == null && curEdited.comment.pCommentId == null)
-				{
-					listDiv.appendChild(curEdited.div);
-					editComment(curEdited.comment, curEdited.div, curEdited.saveCallback, curEdited.deleteOnCancel);
-				}
-				
-			}, mxUtils.bind(this, function(err)
+			editorUi.refreshCommentCache(mxUtils.bind(this, function(list)
 			{
-				listDiv.innerHTML = mxUtils.htmlEntities(mxResources.get('error') + (err && err.message? ': ' + err.message : ''));
-				this.hasError = true;
+				// The commentsChanged listener never re-renders while a
+				// comment is being composed so an explicit refresh
+				// re-attaches the preserved composer here
+				if (list != null && curEdited != null)
+				{
+					renderComments(list);
+				}
+			}), mxUtils.bind(this, function(err)
+			{
+				// Keeps showing the cached comments if the refresh failed
+				if (editorUi.getCommentCacheTarget().commentCache == null)
+				{
+					listDiv.innerHTML = mxUtils.htmlEntities(mxResources.get('error') + (err && err.message? ': ' + err.message : ''));
+					this.hasError = true;
+				}
 			}));
 		}
 		else
@@ -24186,8 +30879,26 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 		}
 	});
 
+	// Updates the list when the comment cache was refreshed, eg. by a
+	// collaborator changing a comment, unless a comment is being composed
+	var commentsChangedListener = mxUtils.bind(this, function()
+	{
+		if (curEdited == null)
+		{
+			var cache = editorUi.getCommentCacheTarget().commentCache;
+
+			if (cache != null)
+			{
+				this.hasError = false;
+				renderComments(cache);
+			}
+		}
+	});
+
+	editorUi.addListener('commentsChanged', commentsChangedListener);
+
 	refresh();
-	
+
 	this.refreshComments = refresh;
 
 	//Refresh the modified date of each comment if the window is visible
@@ -24240,8 +30951,11 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 	{
 		this.window.fit();
 	}));
-	
-	editorUi.installResizeHandler(this, true);
+
+	editorUi.installResizeHandler(this, true, function()
+	{
+		editorUi.removeListener(commentsChangedListener);
+	});
 };
 
 /**

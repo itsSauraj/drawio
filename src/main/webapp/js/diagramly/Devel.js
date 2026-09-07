@@ -127,8 +127,10 @@ mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-AlliedTelesis.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Android.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-ArchiMate.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-ArchiMate3.js');
+mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-ArchiMate4.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Arrows2.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Atlassian.js');
+mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Atlassian2.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-AWS.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-AWS3.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-AWS3D.js');
@@ -243,7 +245,6 @@ mxscript(drawDevUrl + 'js/diagramly/Menus.js');
 mxscript(drawDevUrl + 'js/diagramly/Pages.js');
 mxscript(drawDevUrl + 'js/diagramly/Trees.js');
 mxscript(drawDevUrl + 'js/diagramly/Minimal.js');
-mxscript(drawDevUrl + 'js/diagramly/DistanceGuides.js');
 mxscript(drawDevUrl + 'js/diagramly/mxRuler.js');
 mxscript(drawDevUrl + 'js/diagramly/mxFreehand.js');
 mxscript(drawDevUrl + 'js/diagramly/P2PCollab.js');
@@ -255,7 +256,39 @@ if (!window.DRAWIO_PUBLIC_BUILD)
 	mxscript(drawDevUrl + 'js/diagramly/vsdx/VsdxExport.js');
 }
 
-mxscript(drawDevUrl + 'js/mermaid/mermaid2drawio.js');	
+// ELK layout engine + mxGraph bridge (drawio-elk port, built from
+// ../drawio-elk). Exposes window.ELK (engine), window.ElkLayout (facade
+// extending mxGraphLayout), window.ElkAdapter, window.ElkApplier.
+// Must load BEFORE ElkLayout.js (whose statics decorate ElkLayout) and
+// BEFORE drawio-mermaid (which picks ELK up via globalThis.ELK).
+mxscript(drawDevUrl + 'js/elk/drawio-elk.min.js');
+
+// ElkLayout editor bindings (run / runWithDialog / DIALOG_FIELDS /
+// localStorage settings). Decorates the bundled ElkLayout above with
+// the Arrange > Layout menu integration. drawio-elk doesn't ship these
+// because they're editor-only.
+mxscript(drawDevUrl + 'js/diagramly/ElkLayout.js');
+
+// Mermaid custom parser + cell factory + layout (single bundle built from
+// ../drawio-mermaid via esbuild). Uses window.ELK from drawio-elk above.
+mxscript(drawDevUrl + 'js/mermaid/drawio-mermaid.min.js');
+
+// PlantUML clean-room parser + cell factory (single bundle built from
+// ../drawio-plantuml via esbuild). Exposes window.PlantUml and
+// window.mxPlantUmlToDrawio for the native "Diagram" output (the
+// default) of the PlantUML insert dialog.
+mxscript(drawDevUrl + 'js/plantuml/drawio-plantuml.min.js');
+
+// libavoid obstacle-avoiding orthogonal edge router (pure-JS, built from source
+// in ../drawio-libavoid; see js/libavoid-js/README.md). The bundle is
+// self-contained and self-publishing (like drawio-mermaid): it defines
+// window.Avoid synchronously on load — no separate loader. Fixed order: the
+// bundle → the shared routing core (defines AvoidRouting; canonical, vendored
+// verbatim by drawio-mcp) → the LibavoidRouting editor binding (Arrange >
+// Layout > Orthogonal Routing).
+mxscript(drawDevUrl + 'js/libavoid-js/libavoid.min.js');
+mxscript(drawDevUrl + 'js/libavoid-js/libavoid-routing.js');
+mxscript(drawDevUrl + 'js/diagramly/LibavoidRouting.js');
 
 // Vsdx/vssx support
 mxscript(drawDevUrl + 'js/diagramly/emf/emf-svg.js');

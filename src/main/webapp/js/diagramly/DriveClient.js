@@ -63,6 +63,7 @@ mxUtils.extend(DriveClient, DrawioClient);
 
 DriveClient.prototype.redirectUri = window.DRAWIO_SERVER_URL + 'google';
 DriveClient.prototype.GDriveBaseUrl = 'https://www.googleapis.com/drive/v2';
+DriveClient.prototype.GDriveV3BaseUrl = 'https://www.googleapis.com/drive/v3';
 
 /**
  * OAuth 2.0 scopes for installing Drive Apps.
@@ -1207,23 +1208,13 @@ DriveClient.prototype.getXmlFile = function(resp, success, error, ignoreMime, re
 								data = (window.atob && !mxClient.IS_SF) ? atob(temp) : Base64.decode(temp);
 							}
 							
-							if (Graph.fileSupport && new XMLHttpRequest().upload && this.ui.isRemoteFileFormat(data, url))
+							if (Graph.fileSupport && this.ui.isGliffyData(data, url))
 							{
-								this.ui.parseFileData(data, mxUtils.bind(this, function(xhr)
+								this.ui.importGliffy(data, mxUtils.bind(this, function(xml)
 								{
 									try
 									{
-										if (xhr.readyState == 4)
-										{
-											if (xhr.status >= 200 && xhr.status <= 299)
-											{
-												success(new LocalFile(this.ui, xhr.responseText, resp.title + this.extension, true));
-											}
-											else if (error != null)
-											{
-												error({message: mxResources.get('errorLoadingFile')});
-											}
-										}
+										success(new LocalFile(this.ui, xml, resp.title + this.extension, true));
 									}
 									catch (e)
 									{
@@ -1235,6 +1226,12 @@ DriveClient.prototype.getXmlFile = function(resp, success, error, ignoreMime, re
 										{
 											throw e;
 										}
+									}
+								}), mxUtils.bind(this, function(err)
+								{
+									if (error != null)
+									{
+										error({message: mxResources.get('errorLoadingFile')});
 									}
 								}), resp.title);
 							}

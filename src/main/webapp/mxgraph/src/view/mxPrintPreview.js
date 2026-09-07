@@ -474,6 +474,28 @@ mxPrintPreview.prototype.open = function(css, targetWindow, forcePageBreaks, kee
 		// Adds 1 px border for pagination to match rendering in application
 		var pw = pageFormat.width + 1;
 		var ph = pageFormat.height + 1;
+		var pageClass = null;
+
+		// Adds CSS for individual page formats before the head is written
+		// so that writeHead can check if page class CSS is used
+		if (customPageFormat)
+		{
+			if (this.pendingCss == null)
+			{
+				this.pageFormatClass = {};
+				this.pendingCss = '';
+			}
+
+			pageClass = mxUtils.htmlEntities('gePageFormat-' +
+				String(pageFormat.width).replace(/\./g, '_') + '-' +
+				String(pageFormat.height).replace(/\./g, '_'));
+
+			if (this.pageFormatClass[pageClass] == null)
+			{
+				this.pageFormatClass[pageClass] = true;
+				this.pendingCss += this.getPageClassCss(pageClass, pageFormat);
+			}
+		}
 
 		// Temporarily overrides the method to redirect rendering of overlays
 		// to the draw pane so that they are visible in the printout
@@ -560,27 +582,6 @@ mxPrintPreview.prototype.open = function(css, targetWindow, forcePageBreaks, kee
 		var hpages = Math.max(1, Math.ceil((bounds.width + this.x0) / availableWidth));
 		var vpages = Math.max(1, Math.ceil((bounds.height + this.y0) / availableHeight));
 		this.pageCount = hpages * vpages;
-		var pageClass = null;
-
-		// Adds CSS for individual page formats
-		if (customPageFormat)
-		{
-			if (this.pendingCss == null)
-			{
-				this.pageFormatClass = {};
-				this.pendingCss = '';
-			}
-
-			pageClass = mxUtils.htmlEntities('gePageFormat-' +
-				String(pageFormat.width).replace(/\./g, '_') + '-' +
-				String(pageFormat.height).replace(/\./g, '_'));
-			
-			if (this.pageFormatClass[pageClass] == null)
-			{
-				this.pageFormatClass[pageClass] = true;
-				this.pendingCss += this.getPageClassCss(pageClass, pageFormat);
-			}
-		}
 
 		var addPage = mxUtils.bind(this, function(div)
 		{
@@ -768,8 +769,8 @@ mxPrintPreview.prototype.writeHead = function(doc, css)
 	doc.writeln(this.defaultCss);
 	var pf = this.pageFormat;
 
-	// Sets printer defaults
-	if (this.addPageCss && pf != null)
+	// Sets printer defaults if no page class CSS is used
+	if (this.addPageCss && pf != null && this.pendingCss == null)
 	{
 		var size = ((pf.width / this.pixelsPerInch)).toFixed(2) + 'in ' +
 			((pf.height / this.pixelsPerInch)).toFixed(2) + 'in';
@@ -784,7 +785,9 @@ mxPrintPreview.prototype.writeHead = function(doc, css)
 
 	if (css != null)
 	{
-		doc.writeln(mxUtils.htmlEntities(css, false, false, false));
+		// Entities are not decoded inside style elements so the CSS is
+		// written unescaped with the style end tag neutralized
+		doc.writeln(css.replace(/<\/style/gi, '<\\/style'));
 	}
 	
 	doc.writeln('</style>');
@@ -1118,11 +1121,13 @@ mxPrintPreview.prototype.createSvgGrid = function(svg, clip)
 		svgDoc.createElementNS(mxConstants.NS_SVG, 'g') :
 		svgDoc.createElement('g');
 
-	var xp = mxUtils.mod(Math.ceil(Math.round(clip.x) / size), this.gridSteps);
-	var x = mxUtils.mod(size - mxUtils.mod(Math.round(clip.x), size), size);
+	// No rounding of the clip origin so the grid phase stays continuous
+	// across page seams for fractional page sizes and grid sizes
+	var xp = mxUtils.mod(Math.ceil(clip.x / size), this.gridSteps);
+	var x = mxUtils.mod(size - mxUtils.mod(clip.x, size), size);
 
-	var yp = mxUtils.mod(Math.ceil(Math.round(clip.y) / size), this.gridSteps);
-	var y = mxUtils.mod(size - mxUtils.mod(Math.round(clip.y), size), size);
+	var yp = mxUtils.mod(Math.ceil(clip.y / size), this.gridSteps);
+	var y = mxUtils.mod(size - mxUtils.mod(clip.y, size), size);
 	
 	x *= this.scale;
 	y *= this.scale;
