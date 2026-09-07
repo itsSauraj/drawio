@@ -392,6 +392,7 @@ mxText.prototype.resetStyles = function()
 	this.horizontal = true;
 	delete this.background;
 	delete this.border;
+	this.labelPadding = 0;
 	this.textDirection = mxConstants.DEFAULT_TEXT_DIRECTION;
 	delete this.margin;
 };
@@ -426,6 +427,7 @@ mxText.prototype.apply = function(state)
 		this.horizontal = mxUtils.getValue(this.style, mxConstants.STYLE_HORIZONTAL, this.horizontal);
 		this.background = mxUtils.getValue(this.style, mxConstants.STYLE_LABEL_BACKGROUNDCOLOR, this.background);
 		this.border = mxUtils.getValue(this.style, mxConstants.STYLE_LABEL_BORDERCOLOR, this.border);
+		this.labelPadding = mxUtils.getValue(this.style, mxConstants.STYLE_LABEL_PADDING, this.labelPadding);
 		this.textDirection = mxUtils.getValue(this.style, mxConstants.STYLE_TEXT_DIRECTION, mxConstants.DEFAULT_TEXT_DIRECTION);
 		this.opacity = mxUtils.getValue(this.style, mxConstants.STYLE_TEXT_OPACITY, 100);
 		this.updateMargin();
@@ -651,6 +653,7 @@ mxText.prototype.configureCanvas = function(c, x, y, w, h)
 	c.setFontColor(this.color);
 	c.setFontBackgroundColor(this.background);
 	c.setFontBorderColor(this.border);
+	c.setLabelPadding(this.labelPadding);
 	c.setFontFamily(this.family);
 	c.setFontSize(this.size);
 	c.setFontStyle(this.fontStyle);
@@ -700,7 +703,7 @@ mxText.prototype.getTextCss = function()
 		mxConstants.LINE_HEIGHT;
 
 	var css = 'display: inline-block; font-size: ' + this.size + 'px; ' +
-		'font-family: ' + this.family + '; color: ' + this.color + '; line-height: ' + lh +
+		'font-family: ' + mxUtils.parseCssFontFamily(this.family) + '; color: ' + this.color + '; line-height: ' + lh +
 		'; pointer-events: ' + ((this.pointerEvents) ? 'all' : 'none') + '; ';
 
 	if ((this.fontStyle & mxConstants.FONT_BOLD) == mxConstants.FONT_BOLD)
@@ -724,9 +727,14 @@ mxText.prototype.getTextCss = function()
 	{
 		deco.push('line-through');
 	}
-	
+
 	if (deco.length > 0)
 	{
+		if ((this.fontStyle & mxConstants.FONT_UNDERLINE_DOTTED) == mxConstants.FONT_UNDERLINE_DOTTED)
+		{
+			deco.push('dotted');
+		}
+
 		css += 'text-decoration: ' + deco.join(' ') + '; ';
 	}
 
@@ -781,6 +789,7 @@ mxText.prototype.redrawHtmlShapeWithCss3 = function()
 	mxSvgCanvas2D.createCss(w + 2, h, this.align, this.valign, this.wrap, this.overflow, this.clipped, dir,
 		(this.background != null) ? mxUtils.htmlEntities(this.background) : null,
 		(this.border != null) ? mxUtils.htmlEntities(this.border) : null,
+		mxUtils.parseCssSpacing(this.labelPadding),
 		flex, block, this.scale, mxUtils.bind(this, function(dx, dy, flex, item, block, ofl)
 	{
 		var r = this.getTextRotation();
@@ -1008,7 +1017,7 @@ mxText.prototype.updateFont = function(node)
 	
 	style.lineHeight = (mxConstants.ABSOLUTE_LINE_HEIGHT) ? (this.size * mxConstants.LINE_HEIGHT) + 'px' : mxConstants.LINE_HEIGHT;
 	style.fontSize = this.size + 'px';
-	style.fontFamily = this.family;
+	style.fontFamily = mxUtils.parseCssFontFamily(this.family);
 	style.verticalAlign = 'top';
 	style.color = this.color;
 	
@@ -1041,9 +1050,14 @@ mxText.prototype.updateFont = function(node)
 	{
 		txtDecor.push('line-through');
 	}
-	
+
+	if (txtDecor.length > 0 && (this.fontStyle & mxConstants.FONT_UNDERLINE_DOTTED) == mxConstants.FONT_UNDERLINE_DOTTED)
+	{
+		txtDecor.push('dotted');
+	}
+
 	style.textDecoration = txtDecor.join(' ');
-	
+
 	if (this.align == mxConstants.ALIGN_CENTER)
 	{
 		style.textAlign = 'center';

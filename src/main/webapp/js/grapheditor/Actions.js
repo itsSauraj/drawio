@@ -485,6 +485,23 @@ Actions.prototype.init = function()
 
 	this.put('turn', turnAction);
 
+	// Rotates fully unconnected edges by 90 degrees (separate from the edge
+	// reverse provided by the turn action above, see issue #5076)
+	var rotateEdgeAction = new Action('rotateEdge', function(evt, trigger)
+	{
+		var evt = (trigger != null) ? trigger : evt;
+
+		graph.rotateEdges(graph.getSelectionCells(),
+			(evt != null) ? mxEvent.isShiftDown(evt) : false);
+	});
+
+	rotateEdgeAction.getTitle = function()
+	{
+		return mxResources.get('turn');
+	};
+
+	this.put('rotateEdge', rotateEdgeAction);
+
 	this.put('selectConnections', new Action('selectEdges', function(evt)
 	{
 		var cell = graph.getSelectionCell();
@@ -562,6 +579,65 @@ Actions.prototype.init = function()
 	{
 		graph.orderCells(true, null, true);
 	}, null, null, Editor.ctrlKey + '+Alt+Shift+B');
+	// Alignment and distribution as named actions so they are reachable via
+	// the omnisearch (type "/", then eg. "align top") without a keyboard
+	// shortcut. Mirrors the Arrange panel / Edit > Align and Distribute menus.
+	this.addAction('alignCellsLeft', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.alignCells(mxConstants.ALIGN_LEFT);
+		}
+	});
+	this.addAction('alignCellsCenter', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.alignCells(mxConstants.ALIGN_CENTER);
+		}
+	});
+	this.addAction('alignCellsRight', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.alignCells(mxConstants.ALIGN_RIGHT);
+		}
+	});
+	this.addAction('alignCellsTop', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.alignCells(mxConstants.ALIGN_TOP);
+		}
+	});
+	this.addAction('alignCellsMiddle', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.alignCells(mxConstants.ALIGN_MIDDLE);
+		}
+	});
+	this.addAction('alignCellsBottom', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.alignCells(mxConstants.ALIGN_BOTTOM);
+		}
+	});
+	this.addAction('distributeHorizontal', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.distributeCells(true);
+		}
+	});
+	this.addAction('distributeVertical', function()
+	{
+		if (graph.isEnabled())
+		{
+			graph.distributeCells(false);
+		}
+	});
 	this.addAction('group', function()
 	{
 		if (graph.isEnabled())
@@ -662,8 +738,9 @@ Actions.prototype.init = function()
 	}, null, null, 'F2/Enter');
 	this.addAction('editData...', function()
 	{
-		var cell = graph.getSelectionCell() || graph.getModel().getRoot();
-		ui.showDataDialog(cell);
+		var cells = graph.getSelectionCells();
+		ui.showDataDialog((cells.length > 0) ? cells :
+			graph.getModel().getRoot());
 	}, null, null, Editor.ctrlKey + '+M');
 	this.addAction('editTooltip...', function()
 	{
@@ -694,15 +771,32 @@ Actions.prototype.init = function()
 				}
 			}
 			
-	    	var dlg = new TextareaDialog(ui, mxResources.get('editTooltip') + ':', tooltip, function(newValue)
+	    	var dlg = new MarkupDialog(ui, mxResources.get('editTooltip') + ':', tooltip, function(newValue)
 			{
 				graph.setTooltipForCell(cell, newValue);
 			});
-			ui.showDialog(dlg.container, 320, 200, true, true, null, null, null,
-				new mxRectangle(0, 0, 240, 140), null, 'editTooltip');
+			ui.showDialog(dlg.container, 420, 300, true, true, null, null, null,
+				new mxRectangle(0, 0, 320, 240), null, 'editTooltip');
 			dlg.init();
 		}
 	}, null, null,  Editor.altKey + '+' + Editor.shiftKey + '+T');
+	this.addAction('editNote...', function()
+	{
+		var cell = graph.getSelectionCell();
+
+		if (graph.isEnabled() && cell != null && graph.isCellEditable(cell))
+		{
+			var note = graph.getNoteForCell(cell) || '';
+
+	    	var dlg = new MarkupDialog(ui, mxResources.get('editNote') + ':', note, function(newValue)
+			{
+				graph.setNoteForCell(cell, newValue);
+			});
+			ui.showDialog(dlg.container, 420, 300, true, true, null, null, null,
+				new mxRectangle(0, 0, 320, 240), null, 'editNote');
+			dlg.init();
+		}
+	}, null, null,  Editor.altKey + '+' + Editor.shiftKey + '+N');
 	this.addAction('openLink', function()
 	{
 		var link = graph.getLinkForCell(graph.getSelectionCell());
@@ -880,7 +974,11 @@ Actions.prototype.init = function()
 
 						if (graph.getModel().getChildCount(cell) > 0)
 						{
-							graph.updateGroupBounds([cell], 0, true);
+							// Keeps the groupPadding style as the per-side gap
+							// between the group bounds and its children
+							var pad = graph.getTransparentBoundsPadding(cell);
+							graph.updateGroupBounds([cell], 0, true,
+								pad.n, pad.e, pad.s, pad.w);
 						}
 						else
 						{
@@ -978,7 +1076,21 @@ Actions.prototype.init = function()
 		{
 			if (newValue != null && newValue.length > 0)
 			{
-				graph.setCellStyles(mxConstants.STYLE_ROTATION, newValue);
+				// Rotates group children as a rigid body (see setCellRotation)
+				var cells = graph.getSelectionCells();
+
+				graph.getModel().beginUpdate();
+				try
+				{
+					for (var i = 0; i < cells.length; i++)
+					{
+						graph.setCellRotation(cells[i], newValue);
+					}
+				}
+				finally
+				{
+					graph.getModel().endUpdate();
+				}
 			}
 		}, mxResources.get('enterValue') + ' (' + mxResources.get('rotation') + ' 0-360)');
 		
@@ -1136,7 +1248,22 @@ Actions.prototype.init = function()
 	action.isEnabled = isGraphEnabled;
 	action = this.addAction('pageView', mxUtils.bind(this, function()
 	{
-		ui.setPageVisible(!graph.pageVisible);
+		var value = !graph.pageVisible;
+
+		// Replaces the preserved original value so that an explicit toggle
+		// is serialized even where a URL parameter or inline embed mode has
+		// forced the loaded state (see Editor.setGraphXml/getGraphXml)
+		if (ui.editor.savedGraphState != null &&
+			ui.editor.savedGraphState.page != null)
+		{
+			ui.editor.savedGraphState.page = (value) ? '1' : '0';
+		}
+
+		// Page view is persisted with the file but does not go through the
+		// model so the editor must be marked as modified explicitly (embed
+		// mode only saves on exit if the editor is modified)
+		ui.editor.setModified(true);
+		ui.setPageVisible(value);
 	}));
 	action.setToggleAction(true);
 	action.setSelectedCallback(function() { return graph.pageVisible; });
@@ -1154,14 +1281,6 @@ Actions.prototype.init = function()
 	}, null, null,  Editor.altKey + '+' + Editor.shiftKey + '+O');
 	action.setToggleAction(true);
 	action.setSelectedCallback(function() { return graph.connectionHandler.isEnabled(); });
-	action = this.addAction('copyConnect', function()
-	{
-		graph.connectionHandler.setCreateTarget(!graph.connectionHandler.isCreateTarget());
-		ui.fireEvent(new mxEventObject('copyConnectChanged'));
-	});
-	action.setToggleAction(true);
-	action.setSelectedCallback(function() { return graph.connectionHandler.isCreateTarget(); });
-	action.isEnabled = isGraphEnabled;
 	action = this.addAction('autosave', function()
 	{
 		ui.editor.setAutosave(!ui.editor.autosave);
@@ -1597,7 +1716,7 @@ Actions.prototype.init = function()
 					if (graph.getModel().isEdge(cell))
 					{
 						var geo = graph.getCellGeometry(cell);
-			
+
 						if (geo != null)
 						{
 							geo = geo.clone();
@@ -1607,6 +1726,9 @@ Actions.prototype.init = function()
 							geo.offset = null;
 							graph.getModel().setGeometry(cell, geo);
 						}
+
+						// Reverts a converted self-loop to its default routing
+						graph.setCellStyles('innerLoopWaypoints', null, [cell]);
 					}
 				}
 			}

@@ -63,27 +63,42 @@ Menus.prototype.init = function()
 		
 		if (shape != 'arrow')
 		{
-			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				[null, null, null], null, parent, true, Format.straightImage.src)).setAttribute('title', mxResources.get('straight'));
-			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				['orthogonalEdgeStyle', null, null], null, parent, true, Format.orthogonalImage.src)).setAttribute('title', mxResources.get('orthogonal'));
-			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				['elbowEdgeStyle', 'vertical', null, null], null, parent, true, Format.verticalElbowImage.src)).setAttribute('title', mxResources.get('horizontal'));
-			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				['elbowEdgeStyle', null, null, null], null, parent, true, Format.horizontalElbowImage.src)).setAttribute('title', mxResources.get('vertical'));
-			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				['isometricEdgeStyle', null, null, null], null, parent, true, Format.horizontalIsometricImage.src)).setAttribute('title', mxResources.get('isometric'));
-			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				['isometricEdgeStyle', 'vertical', null, null], null, parent, true, Format.verticalIsometricImage.src)).setAttribute('title', mxResources.get('isometric'));
-	
-			if (shape == null || shape == 'connector')
+			// Each routing entry also clears libavoidRouting so the choices stay
+			// mutually exclusive (picking any plain routing turns auto-routing off).
+			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				[null, null, null, null], null, parent, true, Format.straightImage.src)).setAttribute('title', mxResources.get('straight'));
+			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				['orthogonalEdgeStyle', null, null, null], null, parent, true, Format.orthogonalImage.src)).setAttribute('title', mxResources.get('orthogonal'));
+
+			// libavoid obstacle-avoiding routing (orthogonal + flag, routed at once).
+			// Shown only when the libavoid extensions bundle is loaded (a no-op
+			// in viewers / configs without extensions.min.js).
+			if (typeof LibavoidRouting !== 'undefined')
 			{
-				Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-					['orthogonalEdgeStyle', '1', null], null, parent, true, Format.curvedImage.src)).setAttribute('title', mxResources.get('curved'));
+				Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+					['orthogonalEdgeStyle', null, null, '1'], null, parent, true, Format.libavoidImage.src, function(graph, edges)
+					{
+						LibavoidRouting.autoReroute(graph, edges);
+					})).setAttribute('title', mxResources.get('libavoidAutoRoute'));
 			}
-			
-			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				['entityRelationEdgeStyle', null, null], null, parent, true, Format.entityImage.src)).setAttribute('title', mxResources.get('entityRelation'));
+
+			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				['elbowEdgeStyle', 'vertical', null, null, null], null, parent, true, Format.verticalElbowImage.src)).setAttribute('title', mxResources.get('horizontal'));
+			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				['elbowEdgeStyle', null, null, null, null], null, parent, true, Format.horizontalElbowImage.src)).setAttribute('title', mxResources.get('vertical'));
+			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				['isometricEdgeStyle', null, null, null, null], null, parent, true, Format.horizontalIsometricImage.src)).setAttribute('title', mxResources.get('isometric'));
+			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				['isometricEdgeStyle', 'vertical', null, null, null], null, parent, true, Format.verticalIsometricImage.src)).setAttribute('title', mxResources.get('isometric'));
+
+			if (state == null || Graph.edgeSupportsCurved(state.style))
+			{
+				Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+					['orthogonalEdgeStyle', '1', null, null], null, parent, true, Format.curvedImage.src)).setAttribute('title', mxResources.get('curved'));
+			}
+
+			Format.processMenuIcon(this.edgeStyleChange(menu, '', [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				['entityRelationEdgeStyle', null, null, null], null, parent, true, Format.entityImage.src)).setAttribute('title', mxResources.get('entityRelation'));
 		}
 	})));
 	
@@ -140,7 +155,7 @@ Menus.prototype.init = function()
 				});
 			});
 
-			tr.firstChild.nextSibling.style.fontFamily = fontFamily;
+			tr.firstChild.nextSibling.style.fontFamily = mxUtils.parseCssFontFamily(fontFamily);
 		});
 		
 		for (var i = 0; i < this.defaultFonts.length; i++)
@@ -423,7 +438,7 @@ Menus.prototype.init = function()
 			}));
 		}), parent);
 		menu.addSeparator(parent);
-		menu.addItem(mxResources.get('horizontalTree'), null, mxUtils.bind(this, function()
+		menu.addItem(mxResources.get('horizontalTree') + '...', null, mxUtils.bind(this, function()
 		{
 			var layout = new mxCompactTreeLayout(graph, true);
 			layout.edgeRouting = false;
@@ -439,7 +454,7 @@ Menus.prototype.init = function()
 				}
 			}));
 		}), parent);
-		menu.addItem(mxResources.get('verticalTree'), null, mxUtils.bind(this, function()
+		menu.addItem(mxResources.get('verticalTree') + '...', null, mxUtils.bind(this, function()
 		{
 			var layout = new mxCompactTreeLayout(graph, false);
 			layout.edgeRouting = false;
@@ -455,7 +470,7 @@ Menus.prototype.init = function()
 				}
 			}));
 		}), parent);
-		menu.addItem(mxResources.get('radialTree'), null, mxUtils.bind(this, function()
+		menu.addItem(mxResources.get('radialTree') + '...', null, mxUtils.bind(this, function()
 		{
 			var layout = new mxRadialTreeLayout(graph);
 			layout.levelDistance = 80;
@@ -471,57 +486,33 @@ Menus.prototype.init = function()
 			}));
 		}), parent);
 		menu.addSeparator(parent);
-		menu.addItem(mxResources.get('organic'), null, mxUtils.bind(this, function()
+		menu.addItem(mxResources.get('organic') + '...', null, mxUtils.bind(this, function()
 		{
 			var layout = new mxFastOrganicLayout(graph);
-			
+
 			promptSpacing(layout.forceConstant, mxUtils.bind(this, function(newValue)
 			{
 				this.editorUi.tryAndHandle(mxUtils.bind(this, function()
 				{
 					layout.forceConstant = newValue;
-					
+
 					this.editorUi.executeLayout(function()
 					{
 						var tmp = graph.getSelectionCell();
-						
+
 						if (tmp == null || graph.getModel().getChildCount(tmp) == 0)
 						{
 							tmp = graph.getDefaultParent();
 						}
-						
+
 						layout.execute(tmp);
-						
+
 						if (graph.getModel().isVertex(tmp))
 						{
 							graph.updateGroupBounds([tmp], graph.gridSize * 2, true);
 						}
 					}, true);
 				}));
-			}));
-		}), parent);
-		menu.addItem(mxResources.get('circle'), null, mxUtils.bind(this, function()
-		{
-			this.editorUi.tryAndHandle(mxUtils.bind(this, function()
-			{
-				var layout = new mxCircleLayout(graph);
-				
-				this.editorUi.executeLayout(function()
-				{
-					var tmp = graph.getSelectionCell();
-					
-					if (tmp == null || graph.getModel().getChildCount(tmp) == 0)
-					{
-						tmp = graph.getDefaultParent();
-					}
-					
-					layout.execute(tmp);
-					
-					if (graph.getModel().isVertex(tmp))
-					{
-						graph.updateGroupBounds([tmp], graph.gridSize * 2, true);
-					}
-				}, true);
 			}));
 		}), parent);
 	})));
@@ -540,7 +531,28 @@ Menus.prototype.init = function()
 		this.addSubmenu('navigation', menu, parent);
 		this.addSubmenu('insert', menu, parent);
 		this.addSubmenu('layout', menu, parent);
-		this.addMenuItems(menu, ['-', 'group', 'ungroup', 'removeFromGroup', '-', 'clearWaypoints', 'autosize'], parent);
+		this.addMenuItems(menu, ['-'], parent);
+
+		var groupItem = this.addMenuItem(menu, 'group', parent);
+
+		if (groupItem != null)
+		{
+			var help = this.editorUi.createHelpIcon(
+				'https://www.drawio.com/docs/manual/editor/group-shapes-connectors/');
+			help.style.display = 'inline-block';
+			help.style.verticalAlign = 'middle';
+			help.style.marginLeft = '6px';
+			var cells = groupItem.getElementsByTagName('td');
+
+			// Append to the label column (col2) so the icon sits immediately
+			// next to the "Group" label, not next to the shortcut in col3.
+			if (cells.length > 1)
+			{
+				cells[1].appendChild(help);
+			}
+		}
+
+		this.addMenuItems(menu, ['ungroup', 'removeFromGroup', '-', 'clearWaypoints', 'autosize'], parent);
 	}))).isEnabled = isGraphEnabled;
 	this.put('insert', new Menu(mxUtils.bind(this, function(menu, parent)
 	{
@@ -588,12 +600,12 @@ Menus.prototype.init = function()
 	this.put('edit', new Menu(mxUtils.bind(this, function(menu, parent)
 	{
 		this.addMenuItems(menu, ['undo', 'redo', '-', 'cut', 'copy', 'paste', 'delete', '-', 'duplicate', '-',
-			'editData', 'editTooltip', '-', 'editStyle', '-', 'edit', '-', 'editLink', 'openLink', '-',
+			'editData', 'editTooltip', 'editNote', '-', 'editStyle', '-', 'edit', '-', 'editLink', 'openLink', '-',
 			'selectVertices', 'selectEdges', 'selectAll', 'selectNone', '-', 'lockUnlock']);
 	})));
 	this.put('extras', new Menu(mxUtils.bind(this, function(menu, parent)
 	{
-		this.addMenuItems(menu, ['copyConnect', 'collapseExpand', '-', 'editDiagram']);
+		this.addMenuItems(menu, ['collapseExpand', '-', 'editDiagram']);
 	})));
 	this.put('help', new Menu(mxUtils.bind(this, function(menu, parent)
 	{
@@ -1179,7 +1191,7 @@ Menus.prototype.addInsertTableItem = function(menu, insertFn, parent, showOption
 /**
  * Adds a style change item to the given menu.
  */
-Menus.prototype.edgeStyleChange = function(menu, label, keys, values, sprite, parent, reset, image)
+Menus.prototype.edgeStyleChange = function(menu, label, keys, values, sprite, parent, reset, image, postFn)
 {
 	return this.showIconOnly(menu.addItem(label, image, mxUtils.bind(this, function()
 	{
@@ -1209,6 +1221,10 @@ Menus.prototype.edgeStyleChange = function(menu, label, keys, values, sprite, pa
 							geo.points = null;
 							graph.getModel().setGeometry(cell, geo);
 						}
+
+						// Clears the inner-loop flag along with the waypoints it
+						// describes (mirrors Graph.resetEdge and Clear Waypoints)
+						graph.setCellStyles('innerLoopWaypoints', null, [cell]);
 					}
 
 					for (var j = 0; j < keys.length; j++)
@@ -1234,6 +1250,13 @@ Menus.prototype.edgeStyleChange = function(menu, label, keys, values, sprite, pa
 				'styleChanged', 'cells', edges,
 				'keys', keys, 'values', values,
 				'force', edges.length == 0));
+
+			// Optional follow-up inside the same update (e.g. libavoid routing the
+			// edges immediately after the style is applied, atomically with it).
+			if (postFn != null)
+			{
+				postFn(graph, edges);
+			}
 		}
 		finally
 		{

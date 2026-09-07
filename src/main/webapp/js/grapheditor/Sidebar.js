@@ -8,8 +8,15 @@ function Sidebar(editorUi, container)
 {
 	this.editorUi = editorUi;
 	this.container = container;
+	// Sidebar background tooltip ("Click or drag and drop shapes. …") —
+	// the section titles now carry a more specific "Drag to reorder"
+	// hint, so the broader instruction lives on the container itself
+	// and surfaces when the user hovers over empty sidebar space.
+	this.container.setAttribute('title', mxResources.get('sidebarTooltip'));
 	this.palettes = new Object();
-	this.taglist = new Object();
+	// Null prototype as the taglist is looked up with user-typed search
+	// terms, eg. __proto__ must not resolve to inherited members
+	this.taglist = Object.create(null);
 	this.lastCreated = 0;
 	this.showTooltips = true;
 	this.graph = editorUi.createTemporaryGraph(this.editorUi.editor.graph.getStylesheet());
@@ -43,11 +50,17 @@ function Sidebar(editorUi, container)
 		}
 	});
 
-	this.pointerDownHandler = mxUtils.bind(this, function()
+	this.pointerDownHandler = mxUtils.bind(this, function(evt)
 	{
 		if (this.tooltipCloseImage == null || this.tooltipCloseImage.style.display == 'none')
 		{
 			this.showTooltips = false;
+			this.hideTooltip();
+		}
+		// Closes closable tooltips on pointer events outside of the tooltip
+		else if (this.tooltip != null && this.tooltip.style.display != 'none' &&
+			!mxUtils.isAncestorNode(this.tooltip, mxEvent.getSource(evt)))
+		{
 			this.hideTooltip();
 		}
 	});
@@ -229,6 +242,25 @@ Sidebar.prototype.searchClosedLibraries = true;
  */
 Sidebar.prototype.closedLibraryOpacity = null;
 
+/**
+ * Optional map from library ID to a search ranking weight (default
+ * weight is 0). The weight breaks ties between equally scored search
+ * results, eg. to rank shapes from the latest library of a family
+ * above the same shapes from its superseded predecessors. Default
+ * is null (no weights).
+ */
+Sidebar.prototype.librarySearchWeights = null;
+
+/**
+ * Whether an image-only search (eg. via an external icon provider) is
+ * available. Default is false; subclassers that wire up an image search
+ * backend override this to surface the "Search Images" omnibox option.
+ */
+Sidebar.prototype.isImageSearchSupported = function()
+{
+	return false;
+};
+
 /*
  * Experimental smaller sidebar entries
  */
@@ -240,6 +272,36 @@ if (urlParams['sidebar-entries'] != 'large')
 	Sidebar.prototype.minThumbStrokeWidth = 1.3;
 	Sidebar.prototype.thumbAntiAlias = true;
 }
+
+/*
+ * Defers createThumb until the entry scrolls near the viewport via an
+ * IntersectionObserver. Off-screen palettes pay almost nothing even
+ * when expanded. Toggled off by callers (e.g. search) that need the
+ * thumb's inner DOM populated synchronously. Falls back to eager
+ * rendering (the historical behavior) on browsers without
+ * IntersectionObserver support (IE11, Safari <12.1).
+ */
+Sidebar.prototype.virtualThumbs = typeof IntersectionObserver != 'undefined';
+
+/*
+ * Defers a palette's content creation (onInit) until the expanded
+ * palette scrolls near the viewport — virtualThumbs at the palette
+ * level. Startup and Expand All then only pay for the palettes in
+ * view, even with every library expanded; the rest initialize on
+ * scroll. Falls back to eager init (the historical behavior) on
+ * browsers without IntersectionObserver support (IE11, Safari <12.1).
+ */
+Sidebar.prototype.virtualPalettes = typeof IntersectionObserver != 'undefined';
+
+/**
+ * Placeholder height (in px) for expanded palettes whose content
+ * creation is deferred. Callers that know their entry count refine
+ * this via setDeferredPaletteSize so that off-screen palettes occupy
+ * roughly their real height (a zero-height placeholder would sit at
+ * the same scroll offset as its neighbors and trigger the observer
+ * for all of them at once).
+ */
+Sidebar.prototype.deferredPaletteHeight = 60;
 
 /**
  * Specifies the size of the sidebar titles.
@@ -265,6 +327,11 @@ Sidebar.prototype.maxTooltipWidth = 400;
  * Specifies if titles in the tooltips should be enabled.
  */
 Sidebar.prototype.maxTooltipHeight = 400;
+
+/**
+ * Maximum zoom for scaled-down closable tooltips. Default is 2.
+ */
+Sidebar.prototype.maxTooltipZoom = 2;
 
 /**
  * Specifies if stencil files should be loaded and added to the search index
@@ -302,6 +369,10 @@ Sidebar.prototype.refresh = function()
 	this.graph.stylesheet.styles = mxUtils.clone(
 		graph.getStylesheet().styles);
 	var scrollTop = this.wrapper.scrollTop;
+
+	// Drops pending lazy-render callbacks so the observers do not keep
+	// the DOM removed below alive; recreated lazily on next use
+	this.disconnectObservers();
 	this.wrapper.innerText = '';
 	var temp = this.palettes;
 	this.palettes = new Object();
@@ -432,12 +503,39 @@ Sidebar.prototype.createTooltip = function(elt, cells, w, h, title, showLabel, o
 		this.tooltip.style.zIndex = mxPopupMenu.prototype.zIndex - 1;
 		document.body.appendChild(this.tooltip);
 
-		mxEvent.addMouseWheelListener(mxUtils.bind(this, function(evt)
+		mxEvent.addMouseWheelListener(mxUtils.bind(this, function(evt, up, pinch, cx, cy)
 		{
-			this.hideTooltip();
+			// Zooms tooltips that were scaled down to fit, hides others
+			if (this.tooltipZoomControls.style.display != 'none')
+			{
+				var factor = this.graph2.zoomFactor;
+
+				// Slower zoom for pinch gesture on trackpad
+				if (evt.deltaY != null && Math.abs(evt.deltaY) < 40 &&
+					Math.round(evt.deltaY) != evt.deltaY)
+				{
+					factor = 1 + (Math.abs(evt.deltaY) / 20) * (factor - 1);
+				}
+
+				var rect = this.tooltipContent.getBoundingClientRect();
+				this.setTooltipZoom(this.tooltipZoom * ((up) ? factor : 1 / factor),
+					((cx != null) ? cx : mxEvent.getClientX(evt)) - rect.left,
+					((cy != null) ? cy : mxEvent.getClientY(evt)) - rect.top);
+				mxEvent.consume(evt);
+			}
+			else
+			{
+				this.hideTooltip();
+			}
 		}), this.tooltip);
-		
-		this.graph2 = new Graph(this.tooltip, null, null, this.editorUi.editor.graph.getStylesheet());
+
+		// Scrollable pane between the graph and the overlaid buttons and title
+		this.tooltipContent = document.createElement('div');
+		this.tooltipContent.style.width = '100%';
+		this.tooltipContent.style.height = '100%';
+		this.tooltip.appendChild(this.tooltipContent);
+
+		this.graph2 = new Graph(this.tooltipContent, null, null, this.editorUi.editor.graph.getStylesheet());
 		this.graph2.shapeBackgroundColor = this.graph.shapeBackgroundColor;
 		this.graph2.resetViewOnRootChange = false;
 		this.graph2.foldingEnabled = false;
@@ -471,11 +569,16 @@ Sidebar.prototype.createTooltip = function(elt, cells, w, h, title, showLabel, o
 		
 		mxEvent.addGestureListeners(this.tooltip, mxUtils.bind(this, function(evt)
 		{
+			if (mxUtils.isAncestorNode(this.tooltipZoomControls, mxEvent.getSource(evt)))
+			{
+				return;
+			}
+
 			if (this.tooltipMouseDown != null)
 			{
 				this.tooltipMouseDown(evt);
 			}
-			
+
 			window.setTimeout(mxUtils.bind(this, function()
 			{
 				if (this.tooltipCloseImage == null || this.tooltipCloseImage.style.display == 'none')
@@ -485,20 +588,107 @@ Sidebar.prototype.createTooltip = function(elt, cells, w, h, title, showLabel, o
 			}), 0);
 		}), null, mxUtils.bind(this, function(evt)
 		{
-			this.hideTooltip();
+			// Keeps zoomed tooltips visible for scrolling and ignores
+			// clicks on the zoom controls
+			if (!this.isTooltipZoomed() && !mxUtils.isAncestorNode(
+				this.tooltipZoomControls, mxEvent.getSource(evt)))
+			{
+				this.hideTooltip();
+			}
 		}));
-		
+
+		// Pans a zoomed tooltip on drag inside its viewport
+		mxEvent.addGestureListeners(this.tooltipContent, mxUtils.bind(this, function(evt)
+		{
+			if (this.isTooltipZoomed() && evt.isPrimary != false &&
+				(!mxEvent.isMouseEvent(evt) || mxEvent.isLeftMouseButton(evt)))
+			{
+				var content = this.tooltipContent;
+				var rect = content.getBoundingClientRect();
+				var px = mxEvent.getClientX(evt);
+				var py = mxEvent.getClientY(evt);
+
+				// Ignores events over the scrollbars for native scrolling
+				if (px - rect.left < content.clientWidth &&
+					py - rect.top < content.clientHeight)
+				{
+					var sl = content.scrollLeft;
+					var st = content.scrollTop;
+					content.style.cursor = 'grabbing';
+
+					var move = function(evt2)
+					{
+						content.scrollLeft = sl - mxEvent.getClientX(evt2) + px;
+						content.scrollTop = st - mxEvent.getClientY(evt2) + py;
+						mxEvent.consume(evt2);
+					};
+
+					var end = mxUtils.bind(this, function(evt2)
+					{
+						mxEvent.removeGestureListeners(document, null, move, end);
+						content.style.cursor = (this.isTooltipZoomed()) ? 'grab' : '';
+					});
+
+					mxEvent.addGestureListeners(document, null, move, end);
+					mxEvent.consume(evt, true, false);
+				}
+			}
+		}));
+
 		var close = document.createElement('img');
 		close.setAttribute('src', Editor.crossImage);
 		close.setAttribute('title', mxResources.get('close'));
 		close.className = 'geButton';
 		this.tooltip.appendChild(close);
 		this.tooltipCloseImage = close;
-		
+
 		mxEvent.addListener(close, 'click', mxUtils.bind(this, function(evt)
 		{
 			this.hideTooltip();
 			mxEvent.consume(evt);
+		}));
+
+		// Zoom controls for tooltips that were scaled down to fit
+		var controls = document.createElement('div');
+		controls.style.position = 'absolute';
+		controls.style.right = '26px';
+		controls.style.top = '2px';
+		controls.style.whiteSpace = 'nowrap';
+		this.tooltip.appendChild(controls);
+		this.tooltipZoomControls = controls;
+
+		var addZoomButton = mxUtils.bind(this, function(src, title, fn)
+		{
+			var btn = document.createElement('img');
+			btn.setAttribute('src', src);
+			btn.setAttribute('title', title);
+			btn.className = 'geButton';
+			btn.style.position = 'static';
+			controls.appendChild(btn);
+
+			mxEvent.addListener(btn, 'click', mxUtils.bind(this, function(evt)
+			{
+				fn();
+				mxEvent.consume(evt);
+			}));
+		});
+
+		addZoomButton(Editor.zoomInImage, mxResources.get('zoomIn'),
+			mxUtils.bind(this, function()
+		{
+			this.setTooltipZoom(this.tooltipZoom * this.graph2.zoomFactor);
+		}));
+
+		addZoomButton(Editor.zoomOutImage, mxResources.get('zoomOut'),
+			mxUtils.bind(this, function()
+		{
+			this.setTooltipZoom(this.tooltipZoom / this.graph2.zoomFactor);
+		}));
+
+		addZoomButton(Editor.zoomFitImage, mxResources.get('fit'),
+			mxUtils.bind(this, function()
+		{
+			this.setTooltipZoom(this.tooltipFitScale);
 		}));
 	}
 	
@@ -527,20 +717,27 @@ Sidebar.prototype.createTooltip = function(elt, cells, w, h, title, showLabel, o
 		this.graph2.pasteCellStyles(graph.includeDescendants(temp),
 			(!applyAllStyles) ? graph.defaultVertexStyle : graph.currentVertexStyle,
 			(!applyAllStyles) ? graph.defaultEdgeStyle : graph.currentEdgeStyle,
-			null, graph.pasteEdgeStyle);
+			null, graph.pasteEdgeStyle, (applyAllStyles) ?
+				graph.pasteStylesToText : false);
 		this.graph2.addCells(temp);
 	}
 
 	mxClient.NO_FO = fo;
 	var bounds = this.graph2.getGraphBounds();
-	
+	this.tooltipFitScale = null;
+
 	// Maximum size applied with transform for faster repaint
 	if (maxSize && w > 0 && h > 0 && (bounds.width > w || bounds.height > h))
 	{
 		var s = Math.round(Math.min(w / bounds.width, h / bounds.height) * 100) / 100;
-		
+
 		if (!mxClient.NO_FO)
 		{
+			// Remembers fitted scale and unscaled size for setTooltipZoom
+			this.tooltipFitScale = s;
+			this.tooltipDocWidth = bounds.width + 2 * this.tooltipBorder + 4;
+			this.tooltipDocHeight = bounds.height + 2 * this.tooltipBorder;
+
 			this.graph2.view.getDrawPane().ownerSVGElement.style.transform = 'scale(' + s + ')';
 			this.graph2.view.getDrawPane().ownerSVGElement.style.transformOrigin = '0 0';
 			bounds.width *= s;
@@ -558,12 +755,27 @@ Sidebar.prototype.createTooltip = function(elt, cells, w, h, title, showLabel, o
 	{
 		this.graph2.view.getDrawPane().ownerSVGElement.style.transform = '';
 	}
-	
+
+	// Resets zoom and scrollbars from the previous tooltip
+	this.tooltipZoom = this.tooltipFitScale;
+	this.tooltipZoomControls.style.display = (closable &&
+		this.tooltipFitScale != null) ? '' : 'none';
+	this.tooltipContent.style.overflow = 'visible';
+	this.tooltipContent.style.cursor = '';
+
+	if (!mxClient.NO_FO)
+	{
+		var root = this.graph2.view.getDrawPane().ownerSVGElement;
+		root.style.width = '100%';
+		root.style.height = '100%';
+	}
+
 	var width = bounds.width + 2 * this.tooltipBorder + 4;
 	var height = bounds.height + 2 * this.tooltipBorder;
-	
+
 	this.tooltip.style.overflow = 'visible';
 	this.tooltip.style.width = width + 'px';
+	this.tooltipContent.style.height = height + 'px';
 	var w2 = width;
 	
 	// Adds title for entry
@@ -613,11 +825,22 @@ Sidebar.prototype.createTooltip = function(elt, cells, w, h, title, showLabel, o
 	this.tooltip.style.height = height + 'px';
 	var x0 = -Math.round(bounds.x - this.tooltipBorder) +
 		((w2 > width) ? (w2 - width) / 2 : 0);
+
+	if (w2 > width && this.tooltipFitScale != null)
+	{
+		// Keeps the centered content inside the zoomed scroll range
+		this.tooltipDocWidth += (w2 - width) / 2;
+	}
+
 	var y0 = -Math.round(bounds.y - this.tooltipBorder);
 	off = (off != null) ? off : this.getTooltipOffset(elt, bounds);
 	var left = off.x;
 	var top = off.y;
 	
+	// Remembers the content offset for setTooltipZoom
+	this.tooltipDx = x0;
+	this.tooltipDy = y0;
+
 	if (x0 != 0 || y0 != 0)
 	{
 		this.graph2.view.canvas.setAttribute('transform', 'translate(' + x0 + ',' + y0 + ')');
@@ -638,9 +861,76 @@ Sidebar.prototype.createTooltip = function(elt, cells, w, h, title, showLabel, o
 };
 
 /**
+ * Returns true if the current tooltip is zoomed beyond its fitted scale.
+ */
+Sidebar.prototype.isTooltipZoomed = function()
+{
+	return this.tooltipFitScale != null && this.tooltipZoom > this.tooltipFitScale;
+};
+
+/**
+ * Sets the zoom of a tooltip that was scaled down to fit, adding scrollbars
+ * while the content is larger than the fitted tooltip size. The optional
+ * cx and cy define the fixpoint of the zoom in the tooltip viewport,
+ * defaulting to its center.
+ */
+Sidebar.prototype.setTooltipZoom = function(zoom, cx, cy)
+{
+	if (this.tooltipFitScale != null)
+	{
+		zoom = Math.max(this.tooltipFitScale, Math.min(this.maxTooltipZoom, zoom));
+		var root = this.graph2.view.getDrawPane().ownerSVGElement;
+		var content = this.tooltipContent;
+		cx = (cx != null) ? cx : content.clientWidth / 2;
+		cy = (cy != null) ? cy : content.clientHeight / 2;
+
+		// Keeps the fixpoint stable while zooming
+		var dx = (content.scrollLeft + cx) / this.tooltipZoom;
+		var dy = (content.scrollTop + cy) / this.tooltipZoom;
+		this.tooltipZoom = zoom;
+
+		if (this.isTooltipZoomed())
+		{
+			// Zooms via the canvas transform with the SVG sized to the visible
+			// diagram so that its layout size defines the exact scroll range
+			// (a CSS scale transform does not shrink the scrollable size)
+			this.graph2.view.canvas.setAttribute('transform', 'scale(' + zoom +
+				') translate(' + this.tooltipDx + ',' + this.tooltipDy + ')');
+			root.style.transform = '';
+			root.style.width = Math.ceil(this.tooltipDocWidth * zoom) + 'px';
+			root.style.height = Math.ceil(this.tooltipDocHeight * zoom) + 'px';
+			content.style.overflow = 'auto';
+			content.scrollLeft = Math.round(dx * zoom - cx);
+			content.scrollTop = Math.round(dy * zoom - cy);
+		}
+		else
+		{
+			// Restores the fitted view
+			if (this.tooltipDx != 0 || this.tooltipDy != 0)
+			{
+				this.graph2.view.canvas.setAttribute('transform',
+					'translate(' + this.tooltipDx + ',' + this.tooltipDy + ')');
+			}
+			else
+			{
+				this.graph2.view.canvas.removeAttribute('transform');
+			}
+
+			root.style.transform = 'scale(' + this.tooltipFitScale + ')';
+			root.style.transformOrigin = '0 0';
+			root.style.width = '100%';
+			root.style.height = '100%';
+			content.style.overflow = 'visible';
+		}
+
+		content.style.cursor = (this.isTooltipZoomed()) ? 'grab' : '';
+	}
+};
+
+/**
  * Adds all palettes to the sidebar.
  */
-Sidebar.prototype.showTooltip = function(elt, cells, w, h, title, showLabel)
+Sidebar.prototype.showTooltip = function(elt, cells, w, h, title, showLabel, off)
 {
 	if (this.enableTooltips && this.showTooltips)
 	{
@@ -651,10 +941,10 @@ Sidebar.prototype.showTooltip = function(elt, cells, w, h, title, showLabel)
 				window.clearTimeout(this.thread);
 				this.thread = null;
 			}
-			
+
 			var show = mxUtils.bind(this, function()
 			{
-				this.createTooltip(elt, cells, w, h, title, showLabel);
+				this.createTooltip(elt, cells, w, h, title, showLabel, off);
 			});
 
 			if (this.tooltip != null && this.tooltip.style.display != 'none')
@@ -945,6 +1235,28 @@ Sidebar.prototype.isEntryIgnored = function(entry, searchClosedLibraries)
 };
 
 /**
+ * Returns the search ranking weight for the given entry, ie. the
+ * highest librarySearchWeights value of its parent libraries.
+ * Returns 0 for entries without a weighted parent library.
+ */
+Sidebar.prototype.getEntrySearchWeight = function(entry)
+{
+	var weight = 0;
+
+	if (this.librarySearchWeights != null && entry.parentLibraries != null)
+	{
+		for (var i = 0; i < entry.parentLibraries.length; i++)
+		{
+			var temp = this.librarySearchWeights[entry.parentLibraries[i].id];
+			temp = (typeof temp === 'number') ? temp : 0;
+			weight = (i == 0) ? temp : Math.max(weight, temp);
+		}
+	}
+
+	return weight;
+};
+
+/**
  * Splits a token on camelCase and letter-digit boundaries.
  * e.g. "pid2misc" → ["pid", "misc"], "discInst" → ["disc", "inst"]
  */
@@ -959,13 +1271,105 @@ Sidebar.prototype.splitCompoundToken = function(token)
 };
 
 /**
- * Collects entries matching a single term (exact + Soundex).
- * Returns { exact: [entries], phonetic: [entries] }.
+ * Returns true if the character before index in key is a word boundary,
+ * ie. the start of the key, a non-alphanumeric character (eg. "-") or
+ * a letter-digit transition.
+ */
+Sidebar.prototype.isTagMatchBoundary = function(key, index)
+{
+	if (index == 0)
+	{
+		return true;
+	}
+
+	var prev = key.charCodeAt(index - 1);
+	var curr = key.charCodeAt(index);
+	var prevDigit = prev >= 48 && prev <= 57;
+	var currDigit = curr >= 48 && curr <= 57;
+
+	// Non-alphanumeric characters are boundaries
+	if (!prevDigit && !(prev >= 97 && prev <= 122))
+	{
+		return true;
+	}
+
+	return prevDigit != currDigit;
+};
+
+/**
+ * Collects entries for tags that contain the given term, eg. "7050"
+ * matches the tag "dcs-7050qx-32" of a shape imported from a VSSX
+ * library. Matches at word boundaries within a tag are added to
+ * prefix, matches elsewhere to substring. Entries in seen are ignored
+ * and matched entries are added to seen.
+ */
+Sidebar.prototype.matchPartialEntries = function(term, seen, prefix, substring)
+{
+	// Requires longer terms for matches inside words to avoid noise
+	var minInnerLength = 4;
+
+	if (term.length >= 2)
+	{
+		for (var key in this.taglist)
+		{
+			var c = key.charCodeAt(0);
+
+			// Ignores Soundex keys (upper case first letter) and exact matches
+			if ((c >= 65 && c <= 90) || key === term)
+			{
+				continue;
+			}
+
+			var idx = key.indexOf(term);
+
+			if (idx >= 0)
+			{
+				var entry = this.taglist[key];
+
+				if (typeof entry === 'object' && entry.entries != null)
+				{
+					// Checks if any occurrence starts at a word boundary
+					var boundary = false;
+					var j = idx;
+
+					while (j >= 0 && !boundary)
+					{
+						boundary = this.isTagMatchBoundary(key, j);
+						j = (boundary) ? j : key.indexOf(term, j + 1);
+					}
+
+					if (boundary || term.length >= minInnerLength)
+					{
+						var target = (boundary) ? prefix : substring;
+						var arr = entry.entries;
+
+						for (var k = 0; k < arr.length; k++)
+						{
+							if (seen.get(arr[k]) == null)
+							{
+								seen.put(arr[k], true);
+								target.push(arr[k]);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+};
+
+/**
+ * Collects entries matching a single term (exact, partial and Soundex).
+ * Returns { exact: [entries], prefix: [entries], substring: [entries],
+ * phonetic: [entries] }.
  */
 Sidebar.prototype.matchTermEntries = function(term, reverseMap)
 {
 	var exact = [];
+	var prefix = [];
+	var substring = [];
 	var phonetic = [];
+	var english = null;
 
 	var found = this.taglist[term];
 
@@ -977,7 +1381,7 @@ Sidebar.prototype.matchTermEntries = function(term, reverseMap)
 	// Checks English translation for localized search terms
 	if (reverseMap != null)
 	{
-		var english = reverseMap[term];
+		english = reverseMap[term];
 
 		if (english != null && english !== term)
 		{
@@ -994,6 +1398,29 @@ Sidebar.prototype.matchTermEntries = function(term, reverseMap)
 				}
 			}
 		}
+		else
+		{
+			english = null;
+		}
+	}
+
+	// Adds partial matches on tags, eg. for searching parts of shape
+	// names in imported libraries where the whole name is one tag
+	var seen = new mxDictionary();
+
+	for (var i = 0; i < exact.length; i++)
+	{
+		seen.put(exact[i], true);
+	}
+
+	this.matchPartialEntries(term, seen, prefix, substring);
+
+	// Tags may differ from the resource key in inflection, eg. the
+	// mockups resource key resolves to the singular mockup tag, so
+	// partial and Soundex matching must also run on the translation
+	if (english != null)
+	{
+		this.matchPartialEntries(english, seen, prefix, substring);
 	}
 
 	var normalized = Editor.soundex(term.replace(/\.*\d*$/, ''));
@@ -1008,7 +1435,31 @@ Sidebar.prototype.matchTermEntries = function(term, reverseMap)
 		}
 	}
 
-	return { exact: exact, phonetic: phonetic };
+	// Soundex of the raw term cannot match for non-Latin scripts, so
+	// localized terms rely on the Soundex of the translation
+	if (english != null)
+	{
+		var englishNormalized = Editor.soundex(english.replace(/\.*\d*$/, ''));
+
+		if (englishNormalized.length > 0 && englishNormalized !== english &&
+			englishNormalized !== normalized)
+		{
+			found = this.taglist[englishNormalized];
+
+			if (found != null)
+			{
+				for (var i = 0; i < found.entries.length; i++)
+				{
+					if (mxUtils.indexOf(phonetic, found.entries[i]) < 0)
+					{
+						phonetic.push(found.entries[i]);
+					}
+				}
+			}
+		}
+	}
+
+	return { exact: exact, prefix: prefix, substring: substring, phonetic: phonetic };
 };
 
 /**
@@ -1022,7 +1473,8 @@ Sidebar.prototype.getResourceReverseMap = function()
 
 	if (this.resourceReverseMap == null || this.resourceReverseLang !== lang)
 	{
-		this.resourceReverseMap = {};
+		// Null prototype as the map is looked up with user-typed search terms
+		this.resourceReverseMap = Object.create(null);
 		this.resourceReverseLang = lang;
 
 		if (lang !== 'en' && mxResources.resources != null)
@@ -1033,9 +1485,12 @@ Sidebar.prototype.getResourceReverseMap = function()
 
 				if (value != null && typeof value === 'string' && value !== key)
 				{
-					var lower = value.toLowerCase();
+					// Strips Unicode directional formatting characters that
+					// wrap the values in the RTL resource files as they never
+					// appear in typed search terms
+					var lower = value.replace(/[\u200e\u200f\u202a-\u202e]/g, '').toLowerCase();
 
-					if (lower !== key && this.resourceReverseMap[lower] == null)
+					if (lower.length > 0 && lower !== key && this.resourceReverseMap[lower] == null)
 					{
 						this.resourceReverseMap[lower] = key;
 					}
@@ -1050,7 +1505,7 @@ Sidebar.prototype.getResourceReverseMap = function()
 /**
  * Adds shape search UI.
  */
-Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, error, searchClosedLibraries)
+Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, error, searchClosedLibraries, imagesOnly)
 {
 	if (this.taglist != null && searchTerms != null)
 	{
@@ -1064,7 +1519,7 @@ Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, er
 		// Normalize: split compound tokens like "pid2misc" → ["pid", "misc"]
 		var rawTerms = searchTerms.toLowerCase().split(' ');
 		var tmp = [];
-		var seenTerms = {};
+		var seenTerms = Object.create(null);
 
 		for (var i = 0; i < rawTerms.length; i++)
 		{
@@ -1088,6 +1543,24 @@ Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, er
 		// Builds reverse map for localized search term translation
 		var reverseMap = this.getResourceReverseMap();
 
+		// Translates multi-word localized names as a whole, eg. "balon kata"
+		// (id) resolves to the callout tag while its single tokens do not.
+		// Soundex covers translations that only match a tag phonetically,
+		// eg. "miundo ya majaribio" (sw) resolves to the mockups resource
+		// key while the tag is the singular mockup
+		if (tmp.length > 1)
+		{
+			var english = reverseMap[searchTerms.toLowerCase().replace(/\s+/g, ' ').trim()];
+
+			if (english != null && !seenTerms[english] &&
+				(this.taglist[english] != null ||
+				this.taglist[Editor.soundex(english.replace(/\.*\d*$/, ''))] != null))
+			{
+				seenTerms[english] = true;
+				tmp.push(english);
+			}
+		}
+
 		var max = (page + 1) * count;
 
 		// Collect per-term match entries
@@ -1106,7 +1579,8 @@ Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, er
 
 		for (var i = 0; i < termMatches.length; i++)
 		{
-			var arr = termMatches[i].exact.concat(termMatches[i].phonetic);
+			var arr = termMatches[i].exact.concat(termMatches[i].prefix,
+				termMatches[i].substring, termMatches[i].phonetic);
 			var tmpDict = new mxDictionary();
 
 			if (arr.length > 0)
@@ -1140,8 +1614,11 @@ Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, er
 			}
 		}
 
-		// Score candidates: +1.0 per exact match, +0.5 per Soundex-only match
-		// Each shape scores at most once per term (exact wins over Soundex)
+		// Score candidates: +1.0 per exact match, +0.8 per match at a word
+		// boundary in a tag, +0.6 per match inside a tag, +0.5 per
+		// Soundex-only match. Each shape scores at most once per term
+		// (using its best tier)
+		var tierScores = [1.0, 0.8, 0.6, 0.5];
 		var scores = new mxDictionary();
 		var allEntries = new mxDictionary();
 		var candidateFilter = null;
@@ -1159,48 +1636,43 @@ Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, er
 
 		for (var i = 0; i < termMatches.length; i++)
 		{
-			var exactForTerm = new mxDictionary();
+			var matchedForTerm = new mxDictionary();
+			var tiers = [termMatches[i].exact, termMatches[i].prefix,
+				termMatches[i].substring, termMatches[i].phonetic];
 
-			for (var j = 0; j < termMatches[i].exact.length; j++)
+			for (var t = 0; t < tiers.length; t++)
 			{
-				var entry = termMatches[i].exact[j];
-
-				if (candidateFilter == null || candidateFilter.get(entry) != null)
+				for (var j = 0; j < tiers[t].length; j++)
 				{
-					var prev = scores.get(entry);
+					var entry = tiers[t][j];
 
-					scores.put(entry, (prev || 0) + 1.0);
-					allEntries.put(entry, entry);
-					exactForTerm.put(entry, true);
-				}
-			}
+					if ((candidateFilter == null || candidateFilter.get(entry) != null) &&
+						matchedForTerm.get(entry) == null)
+					{
+						var prev = scores.get(entry);
 
-			for (var j = 0; j < termMatches[i].phonetic.length; j++)
-			{
-				var entry = termMatches[i].phonetic[j];
-
-				if ((candidateFilter == null || candidateFilter.get(entry) != null) &&
-					exactForTerm.get(entry) == null)
-				{
-					var prev = scores.get(entry);
-
-					scores.put(entry, (prev || 0) + 0.5);
-					allEntries.put(entry, entry);
+						matchedForTerm.put(entry, true);
+						scores.put(entry, (prev || 0) + tierScores[t]);
+						allEntries.put(entry, entry);
+					}
 				}
 			}
 		}
 
-		// Collect and sort by score descending
+		// Collect and sort by score descending, using the library search
+		// weights to break ties so that entries from superseded libraries
+		// appear after equally scored entries from their replacements
 		var candidates = [];
 
-		allEntries.visit(function(key, entry)
+		allEntries.visit(mxUtils.bind(this, function(key, entry)
 		{
-			candidates.push({ entry: entry, score: scores.get(entry) || 0 });
-		});
+			candidates.push({ entry: entry, score: scores.get(entry) || 0,
+				weight: this.getEntrySearchWeight(entry) });
+		}));
 
 		candidates.sort(function(a, b)
 		{
-			return b.score - a.score;
+			return (b.score - a.score) || (b.weight - a.weight);
 		});
 
 		var results = [];
@@ -1300,7 +1772,13 @@ Sidebar.prototype.addSearchPalette = function(expand)
 
 	var input = document.createElement('input');
 	input.setAttribute('id', 'geOmniSearch');
-	input.setAttribute('placeholder', mxResources.get('typeSlashToSearch'));
+	// Reuse the placeholder text as the hover tooltip so the "Type /
+	// to search" hint is also discoverable while the input is focused
+	// (placeholders disappear once the user starts typing) and so the
+	// sidebar container's broader tooltip doesn't surface here.
+	var omniHint = mxResources.get('typeSlashToSearch');
+	input.setAttribute('placeholder', omniHint);
+	input.setAttribute('title', omniHint);
 	input.setAttribute('type', 'text');
 	inner.appendChild(input);
 
@@ -1487,17 +1965,17 @@ Sidebar.prototype.addSearchPalette = function(expand)
 
 		var item = menu.addItem(mxResources.get('searchShapes'), null, mxUtils.bind(this, function()
 		{
-			find();
+			find(null, false);
 		}), parent);
 
 		setEnterAction(item, function()
 		{
-			find();
+			find(null, false);
 		});
 
 		var openLibItem = menu.addItem(mxResources.get('searchShapesInOpenLibraries'), null, mxUtils.bind(this, function()
 		{
-			find(false);
+			find(false, false);
 		}), parent);
 
 		var td = openLibItem.firstChild.nextSibling.nextSibling;
@@ -1505,6 +1983,16 @@ Sidebar.prototype.addSearchPalette = function(expand)
 		span.style.color = 'gray';
 		span.innerHTML = 'Shift+Enter';
 		td.appendChild(span);
+
+		// Separate image-only search (eg. via the icon provider); only
+		// offered when an image search backend is configured.
+		if (this.isImageSearchSupported())
+		{
+			menu.addItem(mxResources.get('searchImages'), null, mxUtils.bind(this, function()
+			{
+				find(null, true);
+			}), parent);
+		}
 
 		menu.addItem(mxResources.get('findInDiagram'), null, mxUtils.bind(this, function()
 		{
@@ -1518,8 +2006,7 @@ Sidebar.prototype.addSearchPalette = function(expand)
 			editorUi.isOwnGDriveDomain() &&
 			editorUi.isExternalDataComms() &&
 			editorUi.getServiceName() == 'draw.io' &&
-			typeof mxMermaidToDrawio !== 'undefined' &&
-			window.isMermaidEnabled)
+			EditorUi.isMermaidSupported())
 		{
 			menu.addItem(mxResources.get('generate'), null, mxUtils.bind(this, function()
 			{
@@ -1779,12 +2266,21 @@ Sidebar.prototype.addSearchPalette = function(expand)
 	});
 
 	var lastSearchClosedLibs = null;
+	var lastImagesOnly = null;
 
-	find = mxUtils.bind(this, function(searchClosedLibs)
+	find = mxUtils.bind(this, function(searchClosedLibs, imagesOnly)
 	{
 		if (searchClosedLibs == null)
 		{
 			searchClosedLibs = this.searchClosedLibraries;
+		}
+
+		// Preserves the current mode for paging (eg. the More Results
+		// button) so an image search is not silently turned into a
+		// shape search; explicit callers (the omnibox items) pass a value.
+		if (imagesOnly == null)
+		{
+			imagesOnly = (lastImagesOnly != null) ? lastImagesOnly : false;
 		}
 
 		editorUi.hideCurrentMenu();
@@ -1797,11 +2293,13 @@ Sidebar.prototype.addSearchPalette = function(expand)
 		{
 			if (center.parentNode != null)
 			{
-				if (searchTerm != input.value || lastSearchClosedLibs != searchClosedLibs)
+				if (searchTerm != input.value || lastSearchClosedLibs != searchClosedLibs ||
+					lastImagesOnly != imagesOnly)
 				{
 					clearDiv();
 					searchTerm = input.value;
 					lastSearchClosedLibs = searchClosedLibs;
+					lastImagesOnly = imagesOnly;
 					hash = new Object();
 					complete = false;
 					page = 0;
@@ -1830,6 +2328,7 @@ Sidebar.prototype.addSearchPalette = function(expand)
 								active = false;
 								page++;
 								this.insertSearchHint(div, searchTerm, count, page, results, len, more, terms);
+								this.insertSearchResultsHeader(div, searchTerm, page);
 
 								// Allows to repeat the search
 								if (results.length == 0 && page == 1)
@@ -1841,6 +2340,13 @@ Sidebar.prototype.addSearchPalette = function(expand)
 								{
 									center.parentNode.removeChild(center);
 								}
+
+								// Search results dedup and right-click menu key on
+								// elt.innerHTML, which would be empty for every
+								// virtual placeholder. Force synchronous thumbs
+								// for the search render loop.
+								var prevVirtualThumbs = this.virtualThumbs;
+								this.virtualThumbs = false;
 
 								for (var i = 0; i < results.length; i++)
 								{
@@ -1902,6 +2408,8 @@ Sidebar.prototype.addSearchPalette = function(expand)
 									}))(results[i]);
 								}
 
+								this.virtualThumbs = prevVirtualThumbs;
+
 								if (more)
 								{
 									button.removeAttribute('disabled');
@@ -1921,7 +2429,7 @@ Sidebar.prototype.addSearchPalette = function(expand)
 						}), mxUtils.bind(this, function()
 						{
 							button.style.cursor = '';
-						}), searchClosedLibs);
+						}), searchClosedLibs, imagesOnly);
 					}
 					catch (e)
 					{
@@ -1945,7 +2453,7 @@ Sidebar.prototype.addSearchPalette = function(expand)
 	this.searchShapes = function(value)
 	{
 		input.value = value;
-		find();
+		find(null, false);
 	};
 	
 	mxEvent.addListener(input, 'keydown', mxUtils.bind(this, function(evt)
@@ -1953,7 +2461,7 @@ Sidebar.prototype.addSearchPalette = function(expand)
 		if (evt.keyCode == 13 /* Enter */ && evt.shiftKey)
 		{
 			consumeNextShiftUp = true;
-			find(false);
+			find(false, false);
 			mxEvent.consume(evt);
 		}
 		else if (evt.keyCode == 13 /* Enter */ && (evt.metaKey || evt.ctrlKey) &&
@@ -2043,7 +2551,11 @@ Sidebar.prototype.addSearchPalette = function(expand)
 			if (input.value == '')
 			{
 				complete = true;
-				center.style.display = 'none';
+
+				// Deleting the term clears the results like Escape does
+				// (resetSearch also resets searchTerm so that repeating
+				// the previous search runs again)
+				resetSearch();
 			}
 			else if (input.value != searchTerm)
 			{
@@ -2115,6 +2627,17 @@ Sidebar.prototype.insertSearchHint = function(div, searchTerm, count, page, resu
 };
 
 /**
+ * Hook for a header above the search results (called with the page already
+ * incremented, so 1 is the first page). Does nothing here - the application
+ * layer overrides this (grapheditor must not know about specific search
+ * providers).
+ */
+Sidebar.prototype.insertSearchResultsHeader = function(div, searchTerm, page)
+{
+	// Overridden in the application
+};
+
+/**
  * Adds the general palette to the sidebar.
  */
 Sidebar.prototype.addGeneralPalette = function(expand)
@@ -2143,29 +2666,30 @@ Sidebar.prototype.addGeneralPalette = function(expand)
 	 	this.createVertexTemplateEntry('text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;', 180, 120,
 			'<h1 style="margin-top: 0px;">Heading</h1><p>Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor incididunt ' +
 			'ut labore et dolore magna aliqua.</p>', 'Textbox', null, null, 'text textbox textarea'),
- 		this.createVertexTemplateEntry('ellipse;whiteSpace=wrap;html=1;', 120, 80, '', 'Ellipse', null, null, 'oval ellipse state'),
+ 		this.createVertexTemplateEntry('ellipse;whiteSpace=wrap;html=1;shapeInside=1;', 120, 80, '', 'Ellipse', null, null, 'oval ellipse state'),
 		this.createVertexTemplateEntry('whiteSpace=wrap;html=1;aspect=fixed;', 80, 80, '', 'Square', null, null, 'square'),
-		this.createVertexTemplateEntry('ellipse;whiteSpace=wrap;html=1;aspect=fixed;', 80, 80, '', 'Circle', null, null, 'circle'),
+		this.createVertexTemplateEntry('ellipse;whiteSpace=wrap;html=1;shapeInside=1;aspect=fixed;', 80, 80, '', 'Circle', null, null, 'circle'),
 	 	this.createVertexTemplateEntry('shape=process;whiteSpace=wrap;html=1;backgroundOutline=1;', 120, 60, '', 'Process', null, null, 'process task'),
-	 	this.createVertexTemplateEntry('rhombus;whiteSpace=wrap;html=1;', 80, 80, '', 'Diamond', null, null, 'diamond rhombus if condition decision conditional question test'),
-	 	this.createVertexTemplateEntry('shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;', 120, 60, '', 'Parallelogram'),
-	 	this.createVertexTemplateEntry('shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;', 120, 80, '', 'Hexagon', null, null, 'hexagon preparation'),
-	 	this.createVertexTemplateEntry('triangle;whiteSpace=wrap;html=1;', 60, 80, '', 'Triangle', null, null, 'triangle logic inverter buffer'),
+	 	this.createVertexTemplateEntry('rhombus;whiteSpace=wrap;html=1;shapeInside=1;', 80, 80, '', 'Diamond', null, null, 'diamond rhombus if condition decision conditional question test'),
+	 	this.createVertexTemplateEntry('shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;shapeInside=1;fixedSize=1;', 120, 60, '', 'Parallelogram'),
+	 	this.createVertexTemplateEntry('shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;shapeInside=1;fixedSize=1;', 120, 80, '', 'Hexagon', null, null, 'hexagon preparation'),
+	 	this.createVertexTemplateEntry('triangle;whiteSpace=wrap;html=1;shapeInside=1;', 60, 80, '', 'Triangle', null, null, 'triangle logic inverter buffer'),
 	 	this.createVertexTemplateEntry('shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;', 60, 80, '', 'Cylinder', null, null, 'cylinder data database'),
 	 	this.createVertexTemplateEntry('ellipse;shape=cloud;whiteSpace=wrap;html=1;', 120, 80, '', 'Cloud', null, null, 'cloud network'),
 	 	this.createVertexTemplateEntry('shape=document;whiteSpace=wrap;html=1;boundedLbl=1;', 120, 80, '', 'Document'),
 	 	this.createVertexTemplateEntry('shape=internalStorage;whiteSpace=wrap;html=1;backgroundOutline=1;', 80, 80, '', 'Internal Storage'),
 	 	this.createVertexTemplateEntry('shape=cube;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;darkOpacity=0.05;darkOpacity2=0.1;', 120, 80, '', 'Cube'),
-	 	this.createVertexTemplateEntry('shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;', 120, 80, '', 'Step'),
-	 	this.createVertexTemplateEntry('shape=trapezoid;perimeter=trapezoidPerimeter;whiteSpace=wrap;html=1;fixedSize=1;', 120, 60, '', 'Trapezoid'),
+	 	this.createVertexTemplateEntry('shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;shapeInside=1;fixedSize=1;', 120, 80, '', 'Step'),
+	 	this.createVertexTemplateEntry('shape=trapezoid;perimeter=trapezoidPerimeter;whiteSpace=wrap;html=1;shapeInside=1;fixedSize=1;', 120, 60, '', 'Trapezoid'),
 	 	this.createVertexTemplateEntry('shape=tape;whiteSpace=wrap;html=1;', 120, 100, '', 'Tape'),
 	 	this.createVertexTemplateEntry('shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;darkOpacity=0.05;', 80, 100, '', 'Note'),
 	    this.createVertexTemplateEntry('shape=card;whiteSpace=wrap;html=1;', 80, 100, '', 'Card'),
 	    this.createVertexTemplateEntry('shape=callout;whiteSpace=wrap;html=1;perimeter=calloutPerimeter;', 120, 80, '', 'Callout', null, null, 'bubble chat thought speech message'),
+	    this.createVertexTemplateEntry('shape=wedgeCallout;whiteSpace=wrap;html=1;', 120, 80, '', 'Wedge Callout', null, null, 'bubble chat thought speech message callout annotation pointer wedge'),
 	 	this.createVertexTemplateEntry('shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;', 30, 60, 'Actor', 'Actor', false, null, 'user person human stickman'),
-	 	this.createVertexTemplateEntry('shape=xor;whiteSpace=wrap;html=1;', 60, 80, '', 'Or', null, null, 'logic or'),
-	 	this.createVertexTemplateEntry('shape=or;whiteSpace=wrap;html=1;', 60, 80, '', 'And', null, null, 'logic and'),
-	 	this.createVertexTemplateEntry('shape=dataStorage;whiteSpace=wrap;html=1;fixedSize=1;', 100, 80, '', 'Data Storage'),
+	 	this.createVertexTemplateEntry('shape=xor;whiteSpace=wrap;html=1;shapeInside=1;', 60, 80, '', 'Or', null, null, 'logic or'),
+	 	this.createVertexTemplateEntry('shape=or;whiteSpace=wrap;html=1;shapeInside=1;', 60, 80, '', 'And', null, null, 'logic and'),
+	 	this.createVertexTemplateEntry('shape=dataStorage;whiteSpace=wrap;html=1;shapeInside=1;fixedSize=1;', 100, 80, '', 'Data Storage'),
 		this.createVertexTemplateEntry('swimlane;startSize=0;', 200, 200, '', 'Container', null, null, 'container swimlane lane pool group'),
 		this.createVertexTemplateEntry('swimlane;whiteSpace=wrap;html=1;', 200, 200, 'Vertical Container', 'Container', null, null, 'container swimlane lane pool group'),
 		this.createVertexTemplateEntry('swimlane;horizontal=0;whiteSpace=wrap;html=1;', 200, 200, 'Horizontal Container', 'Horizontal Container', null, null, 'container swimlane lane pool group'),
@@ -2227,28 +2751,6 @@ Sidebar.prototype.addGeneralPalette = function(expand)
 			edge.geometry.setTerminalPoint(new mxPoint(160, 0), false);
 			edge.geometry.relative = true;
 			edge.edge = true;
-
-	    	var cell0 = new mxCell('Label', new mxGeometry(0, 0, 0, 0), edgeLabelStyle + ';align=center;verticalAlign=middle;');
-	    	cell0.geometry.relative = true;
-	    	cell0.setConnectable(false);
-	    	cell0.vertex = true;
-	    	edge.insert(cell0);
-	    	
-	    	var cell1 = new mxCell('Source', new mxGeometry(-1, 0, 0, 0), edgeLabelStyle + ';align=left;verticalAlign=bottom;');
-	    	cell1.geometry.relative = true;
-	    	cell1.setConnectable(false);
-	    	cell1.vertex = true;
-	    	edge.insert(cell1);
-			
-			return this.createEdgeTemplateFromCells([edge], 160, 0, 'Connector with 2 Labels');
-		})),
-		this.addEntry(lineTags + 'edge title multiplicity', mxUtils.bind(this, function()
-		{
-			var edge = new mxCell('', new mxGeometry(0, 0, 0, 0), 'endArrow=classic;html=1;');
-			edge.geometry.setTerminalPoint(new mxPoint(0, 0), true);
-			edge.geometry.setTerminalPoint(new mxPoint(160, 0), false);
-			edge.geometry.relative = true;
-			edge.edge = true;
 			
 	    	var cell0 = new mxCell('Label', new mxGeometry(0, 0, 0, 0), edgeLabelStyle + ';align=center;verticalAlign=middle;');
 	    	cell0.geometry.relative = true;
@@ -2268,7 +2770,7 @@ Sidebar.prototype.addGeneralPalette = function(expand)
 	    	cell2.vertex = true;
 	    	edge.insert(cell2);
 	    	
-			return this.createEdgeTemplateFromCells([edge], 160, 0, 'Connector with 3 Labels');
+			return this.createEdgeTemplateFromCells([edge], 160, 0, 'Connector with Labels');
 		})),
 	 	this.addEntry(lineTags + 'edge shape symbol message mail email', mxUtils.bind(this, function()
 		{
@@ -2988,9 +3490,24 @@ Sidebar.prototype.addUmlPalette = function(expand)
 Sidebar.prototype.createTitle = function(label)
 {
 	var elt = document.createElement('a');
-	elt.setAttribute('title', mxResources.get('sidebarTooltip'));
+	// Section titles can be dragged to reorder palettes — surface that
+	// affordance via the tooltip. The broader sidebar-tooltip text now
+	// lives on the container background.
+	elt.setAttribute('title', mxResources.get('reorder'));
 	elt.className = 'geTitle';
-	
+
+	// Invisible overlay over the left-edge arrow icon (the icon itself
+	// is the title's background-image — see addFoldingHandler — so we
+	// can't add a child with the icon directly). The overlay only
+	// carries a tooltip; clicks bubble to the title and trigger the
+	// fold handler as before.
+	var iconHit = document.createElement('span');
+	iconHit.setAttribute('title', mxResources.get('collapseExpand',
+		null, 'Collapse/Expand'));
+	iconHit.style.cssText = 'position:absolute;left:0;top:0;' +
+		'width:24px;height:100%;cursor:pointer';
+	elt.appendChild(iconHit);
+
 	var span = document.createElement('span');
 	mxUtils.write(span, label);
 	elt.appendChild(span);
@@ -3050,7 +3567,7 @@ Sidebar.prototype.createThumb = function(cells, width, height, parent, title, sh
 	node.style.minWidth = '';
 	node.style.minHeight = '';
 	this.disablePointerEvents(node);
-	
+
 	parent.appendChild(node);
 	
 	// Adds title for sidebar entries
@@ -3102,7 +3619,7 @@ Sidebar.prototype.createSection = function(title)
  */
 Sidebar.prototype.createItem = function(cells, title, showLabel, showTitle, width, height,
 	allowCellsInserted, showTooltip, clickFn, thumbWidth, thumbHeight, icon, startEditing,
-	sourceCell, useElt)
+	sourceCell, useElt, connectEdge)
 {
 	showTooltip = (showTooltip != null) ? showTooltip : true;
 	thumbWidth = (thumbWidth != null) ? thumbWidth : this.thumbWidth;
@@ -3117,6 +3634,13 @@ Sidebar.prototype.createItem = function(cells, title, showLabel, showTitle, widt
 		elt.style.width = (thumbWidth + border) + 'px';
 		elt.style.height = (thumbHeight + border) + 'px';
 	}
+
+	// Suppress the sidebar container's tooltip ("Click or drag and drop
+	// shapes. …") from showing when hovering an individual thumb — the
+	// thumb has its own custom showTooltip (cell preview) and the
+	// container hint isn't relevant here. The broken-image branch below
+	// overrides this with the actual cell title.
+	elt.setAttribute('title', '');
 	
 	// Blocks default click action
 	mxEvent.addListener(elt, 'click', function(evt)
@@ -3145,15 +3669,39 @@ Sidebar.prototype.createItem = function(cells, title, showLabel, showTitle, widt
 		else if (useElt == null)
 		{
 			elt.className = 'geItem';
-			this.createThumb(originalCells, thumbWidth, thumbHeight,
-				elt, title, showLabel, showTitle, width, height);
+
+			if (this.virtualThumbs)
+			{
+				// Pre-size the placeholder to match what createThumb
+				// would set, so layout is stable and the observer can
+				// actually decide which entries are off-screen. Without
+				// this, every thumb collapses to default height and the
+				// observer fires for all of them at once on insert.
+				if (this.sidebarTitles && title != null && showTitle != false)
+				{
+					elt.style.height = (this.thumbHeight +
+						this.sidebarTitleSize + 8) + 'px';
+				}
+
+				elt.renderThumbFn = mxUtils.bind(this, function()
+				{
+					this.createThumb(originalCells, thumbWidth, thumbHeight,
+						elt, title, showLabel, showTitle, width, height);
+				});
+				this.getThumbObserver().observe(elt);
+			}
+			else
+			{
+				this.createThumb(originalCells, thumbWidth, thumbHeight,
+					elt, title, showLabel, showTitle, width, height);
+			}
 		}
 		
 		if (cells.length > 1 || cells[0].vertex)
 		{
 			var ds = this.createDragSource(elt, this.createDropHandler(cells, true, allowCellsInserted,
-				bounds, startEditing, sourceCell), this.createDragPreview(width, height),
-				cells, bounds, startEditing);
+				bounds, startEditing, sourceCell, connectEdge), this.createDragPreview(width, height),
+				cells, bounds, startEditing, sourceCell);
 			this.addClickHandler(elt, ds, cells, clickFn, startEditing);
 		
 			// Uses guides for vertices only if enabled in graph
@@ -3165,7 +3713,7 @@ Sidebar.prototype.createItem = function(cells, title, showLabel, showTitle, widt
 		else if (cells[0] != null && cells[0].edge)
 		{
 			var ds = this.createDragSource(elt, this.createDropHandler(cells, false, allowCellsInserted,
-				bounds, startEditing, sourceCell), this.createDragPreview(width, height),
+				bounds, startEditing, sourceCell, connectEdge), this.createDragPreview(width, height),
 				cells, bounds, startEditing);
 			this.addClickHandler(elt, ds, cells, clickFn);
 		}
@@ -3177,7 +3725,13 @@ Sidebar.prototype.createItem = function(cells, title, showLabel, showTitle, widt
 			{
 				if (mxEvent.isMouseEvent(evt))
 				{
-					this.showTooltip(elt, cells, bounds.width, bounds.height, title, showLabel);
+					// In embedInline mode the tooltip is anchored to the document
+					// body, but the editor is a small floating container, so the
+					// default element-relative offset collapses to the page origin.
+					// Anchor the preview near the cursor instead.
+					var off = (urlParams['embedInline'] == '1') ?
+						new mxPoint(evt.clientX + 16, evt.clientY + 16) : null;
+					this.showTooltip(elt, cells, bounds.width, bounds.height, title, showLabel, off);
 				}
 			}));
 		}
@@ -3227,7 +3781,7 @@ Sidebar.prototype.prepareCellsForInsert = function(cells)
 /**
  * Creates a drop handler for inserting the given cells.
  */
-Sidebar.prototype.createDropHandler = function(cells, allowSplit, allowCellsInserted, bounds, startEditing, sourceCell)
+Sidebar.prototype.createDropHandler = function(cells, allowSplit, allowCellsInserted, bounds, startEditing, sourceCell, connectEdge)
 {
 	allowCellsInserted = (allowCellsInserted != null) ? allowCellsInserted : true;
 	this.prepareCellsForInsert.call(this, cells);
@@ -3261,7 +3815,15 @@ Sidebar.prototype.createDropHandler = function(cells, allowSplit, allowCellsInse
 				{
 					target = null;
 				}
-				
+
+				// When reconnecting an unconnected edge terminal to the dropped shape,
+				// ignores the drop target so the shape is inserted at the drop location
+				// and the terminal is connected (never splitting or nesting into it)
+				if (connectEdge != null)
+				{
+					target = null;
+				}
+
 				if (!graph.isCellLocked(target || graph.getDefaultParent()))
 				{
 					graph.model.beginUpdate();
@@ -3287,7 +3849,7 @@ Sidebar.prototype.createDropHandler = function(cells, allowSplit, allowCellsInse
 						else if (cells.length > 0)
 						{
 							select = graph.importCells(cells, x, y, target);
-							
+
 							if (graph.model.isVertex(sourceCell) && select.length == 1 &&
 								graph.model.isVertex(select[0]))
 							{
@@ -3299,6 +3861,21 @@ Sidebar.prototype.createDropHandler = function(cells, allowSplit, allowCellsInse
 								if (graph.connectionHandler.insertBeforeSource)
 								{
 									graph.insertEdgeBeforeCell(edge, sourceCell);
+								}
+							}
+							// Reconnects an existing unconnected edge terminal to the dropped shape
+							else if (connectEdge != null && select.length == 1 &&
+								graph.model.isVertex(select[0]) &&
+								graph.model.contains(connectEdge.cell))
+							{
+								graph.model.setTerminal(connectEdge.cell, select[0], connectEdge.source);
+								var ceGeo = graph.getCellGeometry(connectEdge.cell);
+
+								if (ceGeo != null && ceGeo.getTerminalPoint(connectEdge.source) != null)
+								{
+									ceGeo = ceGeo.clone();
+									ceGeo.setTerminalPoint(null, connectEdge.source);
+									graph.model.setGeometry(connectEdge.cell, ceGeo);
 								}
 							}
 						}
@@ -3347,7 +3924,14 @@ Sidebar.prototype.createDropHandler = function(cells, allowSplit, allowCellsInse
 	
 					if (select != null && select.length > 0)
 					{
-						graph.scrollCellToVisible(select[0]);
+						// Keeps the scroll position if any part of the
+						// dropped cell is visible, eg. for cells larger
+						// than the viewport or at high zoom levels
+						if (!graph.isCellVisibleInViewport(select[0]))
+						{
+							graph.scrollCellToVisible(select[0]);
+						}
+
 						graph.setSelectionCells(select);
 					}
 
@@ -3377,8 +3961,129 @@ Sidebar.prototype.createDragPreview = function(width, height)
 	elt.className = 'geDragPreview';
 	elt.style.width = width + 'px';
 	elt.style.height = height + 'px';
-	
+
 	return elt;
+};
+
+/**
+ * Creates a live preview of the edge that connects the given source cell
+ * to the dropped cell (see createDropHandler) while dragging from the
+ * hover-icon shape picker. Reuses the connection handler's live preview
+ * (createEdgeState, updateEdgeState and createShape invoked on a minimal
+ * handler stand-in) so the previewed edge matches the edge inserted on
+ * drop, including the current edge style, the source's newEdgeStyle and
+ * preview routing overrides.
+ */
+Sidebar.prototype.createEdgePreview = function(graph, sourceCell, cell)
+{
+	var preview =
+	{
+		handler: null,
+		targetState: null,
+		shape: null
+	};
+
+	// Renders the preview edge from the source cell to the given preview
+	// rectangle (in view coordinates), creating the preview on demand
+	preview.update = function(x, y, w, h)
+	{
+		var sourceState = graph.view.getState(sourceCell);
+
+		if (sourceState == null)
+		{
+			preview.hide();
+			return;
+		}
+
+		if (preview.handler == null)
+		{
+			// Stand-in for the connection handler state read by
+			// createEdgeState, updateEdgeState and convertWaypoint
+			preview.handler = {graph: graph, previous: sourceState,
+				currentState: null, edgeState: null, sourceConstraint: null,
+				constraintHandler: null, waypoints: null,
+				convertWaypoint: mxConnectionHandler.prototype.convertWaypoint};
+			preview.handler.edgeState = mxConnectionHandler.prototype.
+				createEdgeState.call(preview.handler, null);
+
+			var targetCell = graph.cloneCell(cell);
+			preview.targetState = new mxCellState(graph.view, targetCell,
+				graph.getCellStyle(targetCell));
+			preview.handler.currentState = preview.targetState;
+		}
+
+		preview.handler.previous = sourceState;
+		var target = preview.targetState;
+		target.x = x;
+		target.y = y;
+		target.width = w;
+		target.height = h;
+
+		// Keeps the target geometry in model coordinates in sync for
+		// routers that inspect the cell rather than the state
+		var geo = target.cell.geometry;
+
+		if (geo != null)
+		{
+			var s = graph.view.scale;
+			var tr = graph.view.translate;
+			geo.x = x / s - tr.x;
+			geo.y = y / s - tr.y;
+			geo.width = w / s;
+			geo.height = h / s;
+		}
+
+		if (preview.shape == null)
+		{
+			preview.shape = mxConnectionHandler.prototype.createShape.call(
+				{graph: graph, livePreview: true,
+				edgeState: preview.handler.edgeState});
+			preview.shape.apply(preview.handler.edgeState);
+		}
+
+		mxConnectionHandler.prototype.updateEdgeState.call(preview.handler,
+			new mxPoint(x + w / 2, y + h / 2), null);
+
+		var edgeState = preview.handler.edgeState;
+		preview.shape.points = edgeState.absolutePoints;
+		preview.shape.scale = graph.view.scale;
+		edgeState.shape = preview.shape;
+		graph.cellRenderer.postConfigureShape(edgeState);
+		edgeState.shape = null;
+		preview.shape.node.style.display = '';
+		preview.shape.redraw();
+	};
+
+	preview.hide = function()
+	{
+		if (preview.shape != null)
+		{
+			preview.shape.node.style.display = 'none';
+		}
+	};
+
+	// Removes the preview and frees per-drag resources, the next call
+	// to update recreates the preview
+	preview.destroy = function()
+	{
+		if (preview.shape != null)
+		{
+			preview.shape.destroy();
+			preview.shape = null;
+		}
+
+		if (typeof LibavoidRouting !== 'undefined' &&
+			LibavoidRouting.endPreview != null)
+		{
+			// Frees the router of the libavoid connect preview
+			LibavoidRouting.endPreview(preview.handler);
+		}
+
+		preview.handler = null;
+		preview.targetState = null;
+	};
+
+	return preview;
 };
 
 /**
@@ -3749,13 +4454,14 @@ Sidebar.prototype.getDropAndConnectGeometry = function(source, target, direction
 };
 
 /**
- * Limits drop style to non-transparent source shapes.
+ * Limits drop style to non-transparent source shapes and groups.
  */
 Sidebar.prototype.isDropStyleEnabled = function(cells, firstVertex)
 {
 	var result = true;
 	
-	if (firstVertex != null && cells.length == 1)
+	if (firstVertex != null && cells.length == 1 &&
+		this.graph.model.getChildCount(cells[firstVertex]) == 0)
 	{
 		var vstyle = this.graph.getCellStyle(cells[firstVertex]);
 		
@@ -3779,6 +4485,208 @@ Sidebar.prototype.isDropStyleTargetIgnored = function(state)
 };
 
 /**
+ * Returns the state of the edge label at the given position for the given
+ * edge state, checking the labels of the child cells and the label of the
+ * edge itself, in which case the given state is returned.
+ */
+Sidebar.prototype.getEdgeLabelStateAt = function(state, x, y)
+{
+	var graph = state.view.graph;
+	var result = null;
+
+	var childCount = graph.model.getChildCount(state.cell);
+
+	for (var i = childCount - 1; i >= 0 && result == null; i--)
+	{
+		var child = graph.model.getChildAt(state.cell, i);
+
+		if (graph.model.isVertex(child))
+		{
+			var childState = graph.view.getState(child);
+
+			if (childState != null && (mxUtils.contains(childState, x, y) ||
+				(childState.text != null && childState.text.boundingBox != null &&
+				mxUtils.contains(childState.text.boundingBox, x, y))))
+			{
+				result = childState;
+			}
+		}
+	}
+
+	if (result == null && state.text != null && state.text.boundingBox != null &&
+		mxUtils.contains(state.text.boundingBox, x, y))
+	{
+		result = state;
+	}
+
+	return result;
+};
+
+/**
+ * Lazily creates a shared IntersectionObserver used to defer thumb
+ * rendering until the entry scrolls near the viewport. Used by the
+ * virtual thumbs path in createItem.
+ */
+Sidebar.prototype.getThumbObserver = function()
+{
+	if (this.thumbObserver == null)
+	{
+		this.thumbObserver = new IntersectionObserver(mxUtils.bind(this, function(entries)
+		{
+			for (var i = 0; i < entries.length; i++)
+			{
+				var entry = entries[i];
+
+				if (entry.isIntersecting)
+				{
+					var fn = entry.target.renderThumbFn;
+
+					if (fn != null)
+					{
+						entry.target.renderThumbFn = null;
+						this.thumbObserver.unobserve(entry.target);
+						fn();
+					}
+				}
+			}
+		}), {rootMargin: '200px 0px'});
+	}
+
+	return this.thumbObserver;
+};
+
+/**
+ * Lazily creates a shared IntersectionObserver used to defer palette
+ * content creation until the expanded palette scrolls near the
+ * viewport. Used by the virtual palettes path in deferPaletteInit.
+ */
+Sidebar.prototype.getPaletteObserver = function()
+{
+	if (this.paletteObserver == null)
+	{
+		this.paletteObserver = new IntersectionObserver(mxUtils.bind(this, function(entries)
+		{
+			for (var i = 0; i < entries.length; i++)
+			{
+				var entry = entries[i];
+
+				if (entry.isIntersecting)
+				{
+					var fn = entry.target.initPaletteFn;
+
+					if (fn != null)
+					{
+						this.paletteObserver.unobserve(entry.target);
+						fn();
+					}
+				}
+			}
+		// Viewport root like getThumbObserver — the sidebar wrapper has
+		// a zero-size rect in some themes (e.g. simple), which makes an
+		// element root never intersect
+		}), {rootMargin: '200px 0px'});
+	}
+
+	return this.paletteObserver;
+};
+
+/**
+ * Defers the given palette content creation until the content div
+ * first scrolls near the viewport. The pending initializer is kept on
+ * the content div so expand/collapse only toggles visibility — a
+ * collapsed (or hidden) palette never intersects and stays
+ * uninitialized until it is both expanded and scrolled into view.
+ */
+Sidebar.prototype.deferPaletteInit = function(content, title, onInit)
+{
+	if (content.style.minHeight == '')
+	{
+		content.style.minHeight = this.deferredPaletteHeight + 'px';
+	}
+
+	content.initPaletteFn = mxUtils.bind(this, function()
+	{
+		content.initPaletteFn = null;
+		content.style.minHeight = '';
+
+		var fo = mxClient.NO_FO;
+		mxClient.NO_FO = Editor.prototype.originalNoForeignObject;
+		onInit(content, title);
+		mxClient.NO_FO = fo;
+	});
+
+	this.getPaletteObserver().observe(content);
+};
+
+/**
+ * Refines the placeholder height of a deferred palette from its entry
+ * count so off-screen palettes occupy roughly their real height.
+ */
+Sidebar.prototype.setDeferredPaletteSize = function(content, count)
+{
+	if (content != null && content.initPaletteFn != null && count > 0)
+	{
+		// Nominal 200px content width; exact numbers don't matter, the
+		// estimate only spreads the palettes out so the observer can
+		// tell which ones are actually near the viewport
+		var perRow = Math.max(1, Math.floor(200 /
+			(this.thumbWidth + 2 * this.thumbBorder + 4)));
+		content.style.minHeight = (Math.ceil(count / perRow) *
+			(this.thumbHeight + 2 * this.thumbBorder + 6)) + 'px';
+	}
+};
+
+/**
+ * Stops observing the given DOM subtree (deferred palette content and
+ * thumb placeholders) before it is removed from the DOM, so the shared
+ * observers do not keep the detached nodes alive.
+ */
+Sidebar.prototype.unobserveElements = function(elt)
+{
+	if (elt.nodeType == mxConstants.NODETYPE_ELEMENT &&
+		(this.thumbObserver != null || this.paletteObserver != null))
+	{
+		var nodes = [elt].concat(Array.prototype.slice.call(
+			elt.querySelectorAll('.geItem, .geSidebar')));
+
+		for (var i = 0; i < nodes.length; i++)
+		{
+			if (this.thumbObserver != null && nodes[i].renderThumbFn != null)
+			{
+				nodes[i].renderThumbFn = null;
+				this.thumbObserver.unobserve(nodes[i]);
+			}
+
+			if (this.paletteObserver != null && nodes[i].initPaletteFn != null)
+			{
+				nodes[i].initPaletteFn = null;
+				this.paletteObserver.unobserve(nodes[i]);
+			}
+		}
+	}
+};
+
+/**
+ * Disconnects the shared thumb and palette observers, dropping all
+ * pending lazy-render callbacks. Used when the sidebar is rebuilt;
+ * the observers are recreated lazily on next use.
+ */
+Sidebar.prototype.disconnectObservers = function()
+{
+	if (this.thumbObserver != null)
+	{
+		this.thumbObserver.disconnect();
+		this.thumbObserver = null;
+	}
+
+	if (this.paletteObserver != null)
+	{
+		this.paletteObserver.disconnect();
+		this.paletteObserver = null;
+	}
+};
+
+/**
  * Creates a drag source for the given element.
  */
 Sidebar.prototype.disablePointerEvents = function(node)
@@ -3797,7 +4705,7 @@ Sidebar.prototype.disablePointerEvents = function(node)
 /**
  * Creates a drag source for the given element.
  */
-Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, bounds, startEditing)
+Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, bounds, startEditing, sourceCell)
 {
 	// Checks if the cells contain any vertices
 	var ui = this.editorUi;
@@ -3807,6 +4715,12 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 	var sidebar = this;
 	var count = 0;
 	var livePreview = this.livePreview;
+
+	// Previews the edge that createDropHandler inserts between the source
+	// cell and the dropped cell (hover-icon shape picker drags)
+	var edgePreview = (sourceCell != null && graph.model.isVertex(sourceCell) &&
+		cells.length == 1 && graph.model.isVertex(cells[0])) ?
+		this.createEdgePreview(graph, sourceCell, cells[0]) : null;
 
 	for (var i = 0; i < cells.length && livePreview; i++)
 	{
@@ -3832,6 +4746,10 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 		}
 	}
 	
+	// Checks if the replace source is a group
+	var groupSource = firstVertex != null &&
+		graph.model.getChildCount(cells[firstVertex]) > 0;
+
 	var dropStyleEnabled = this.isDropStyleEnabled(cells, firstVertex);
 	
 	var dragSource = mxUtils.makeDraggable(elt, graph, mxUtils.bind(this, function(graph, evt, target, x, y)
@@ -3843,9 +4761,18 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 		
 		if (cells != null && currentStyleTarget != null && activeArrow == styleTarget)
 		{
-			var tmp = graph.isCellSelected(currentStyleTarget.cell) ? graph.getSelectionCells() : [currentStyleTarget.cell];
-			graph.updateShapes((graph.model.isEdge(currentStyleTarget.cell)) ? cells[0] : cells[firstVertex], tmp, true);
-			graph.setSelectionCells(tmp);
+			// Replaces the shape of the edge label under the mouse
+			if (styleTargetLabel)
+			{
+				graph.setSelectionCell(graph.updateEdgeLabelShape(
+					cells[firstVertex], currentStyleTarget.cell));
+			}
+			else
+			{
+				var tmp = graph.isCellSelected(currentStyleTarget.cell) ? graph.getSelectionCells() : [currentStyleTarget.cell];
+				graph.updateShapes((graph.model.isEdge(currentStyleTarget.cell)) ? cells[0] : cells[firstVertex], tmp, true);
+				graph.setSelectionCells(tmp);
+			}
 		}
 		else if (cells != null && activeArrow != null && currentTargetState != null && activeArrow != styleTarget)
 		{
@@ -3885,7 +4812,7 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 			var clones = graph.cloneCells(cells);
 			this.graph.pasteCellStyles(graph.includeDescendants(clones),
 				graph.currentVertexStyle, graph.currentEdgeStyle,
-				null, graph.pasteEdgeStyle);
+				null, graph.pasteEdgeStyle, graph.pasteStylesToText);
 			
 			sidebar.createThumb(clones, s * Math.max(1, bounds.width),
 				s * Math.max(1, bounds.height), elt, null, null, null,
@@ -3931,6 +4858,8 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 	var currentTargetState = null;
 	var currentStateHandle = null;
 	var currentStyleTarget = null;
+	var styleTargetBounds = null;
+	var styleTargetLabel = false;
 	var activeTarget = false;
 	
 	var arrowUp = createArrow(this.triangleUp, mxResources.get('connect'));
@@ -4000,7 +4929,12 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 		{
 			ui.hoverIcons.setDisplay('');
 		}
-		
+
+		if (edgePreview != null)
+		{
+			edgePreview.destroy();
+		}
+
 		dragExit.apply(this, arguments);
 	};
 	
@@ -4039,10 +4973,13 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 				
 				if (geo2 != null && !geo2.relative && graph.model.isVertex(parent) && parent != view.currentRoot)
 				{
+					// Uses the parent origin as the base of the child coordinate
+					// space since state.x/y of transparentBounds parents also
+					// contains the child-derived bounds offset
 					var pState = view.getState(parent);
-					
-					dx = pState.x;
-					dy = pState.y;
+
+					dx = view.scale * (view.translate.x + pState.origin.x);
+					dy = view.scale * (view.translate.y + pState.origin.y);
 				}
 				
 				var dx2 = geo3.x;
@@ -4095,6 +5032,29 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 					this.previewElement.firstChild.style.display = '';
 					mxUtils.setOpacity(this.previewElement, 50);
 					this.previewElement.className = '';
+				}
+			}
+
+			// Shows the connecting edge for drops that insert it: hidden
+			// while an arrow or replace target is active (dropAndConnect
+			// or style replace) and while splitting a highlighted edge
+			if (edgePreview != null)
+			{
+				if (activeArrow == null && currentStyleTarget == null &&
+					this.previewElement.style.display != 'none' &&
+					this.previewElement.style.visibility != 'hidden' &&
+					(dragSource.currentHighlight == null ||
+					dragSource.currentHighlight.state == null ||
+					!graph.model.isEdge(dragSource.currentHighlight.state.cell)))
+				{
+					edgePreview.update(parseFloat(this.previewElement.style.left),
+						parseFloat(this.previewElement.style.top),
+						parseFloat(this.previewElement.style.width),
+						parseFloat(this.previewElement.style.height));
+				}
+				else
+				{
+					edgePreview.hide();
 				}
 			}
 		}
@@ -4171,58 +5131,81 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 			timeOnTarget = new Date().getTime() - startTime;
 		}
 
-		// Shift means disabled, delayed on cells with children, shows after this.dropTargetDelay, hides after 2500ms
-		if (dropStyleEnabled && (timeOnTarget < 2500) && state != null && !mxEvent.isShiftDown(evt) &&
-			// If shape is equal or target has no stroke, fill and gradient then use longer delay except for images
-			(((mxUtils.getValue(state.style, mxConstants.STYLE_SHAPE) != mxUtils.getValue(sourceCellStyle, mxConstants.STYLE_SHAPE) &&
+		// Uses the label of the edge or one of its children as the replace target
+		var labelState = (state != null && graph.model.isEdge(state.cell) &&
+			firstVertex != null && !groupSource && !graph.model.isEdge(cells[0])) ?
+			this.getEdgeLabelStateAt(state, x, y) : null;
+
+		// Shift means disabled, delayed on cells with children, shows after this.dropTargetDelay, hides after 3500ms
+		if (dropStyleEnabled && (timeOnTarget < 3500) && state != null && !mxEvent.isShiftDown(evt) &&
+			// If shape is equal or target has no stroke, fill and gradient then use longer delay except for images and groups
+			((((mxUtils.getValue(state.style, mxConstants.STYLE_SHAPE) != mxUtils.getValue(sourceCellStyle, mxConstants.STYLE_SHAPE) || groupSource) &&
 			(mxUtils.getValue(state.style, mxConstants.STYLE_STROKECOLOR, mxConstants.NONE) != mxConstants.NONE ||
 			mxUtils.getValue(state.style, mxConstants.STYLE_FILLCOLOR, mxConstants.NONE) != mxConstants.NONE ||
 			mxUtils.getValue(state.style, mxConstants.STYLE_GRADIENTCOLOR, mxConstants.NONE) != mxConstants.NONE)) ||
 			mxUtils.getValue(sourceCellStyle, mxConstants.STYLE_SHAPE) == 'image') ||
 			timeOnTarget > 1500 || graph.model.isEdge(state.cell)) && (timeOnTarget > this.dropTargetDelay) &&
-			!this.isDropStyleTargetIgnored(state) && ((graph.model.isVertex(state.cell) && firstVertex != null) ||
+			!this.isDropStyleTargetIgnored(state) && (labelState != null ||
+			(graph.model.isVertex(state.cell) && firstVertex != null) ||
 			(graph.model.isEdge(state.cell) && graph.model.isEdge(cells[0]))))
 		{
-			if (graph.isCellEditable(state.cell))
+			if (graph.isCellEditable((labelState != null) ? labelState.cell : state.cell))
 			{
-				currentStyleTarget = state;
-				var tmp = (graph.model.isEdge(state.cell)) ? graph.view.getPoint(state) :
-					new mxPoint(state.getCenterX(), state.getCenterY());
+				currentStyleTarget = (labelState != null) ? labelState : state;
+				styleTargetLabel = labelState != null;
+				var tmp = null;
+
+				// Places the icon at the center of the label
+				if (labelState != null && labelState.text != null &&
+					labelState.text.boundingBox != null)
+				{
+					tmp = new mxPoint(labelState.text.boundingBox.getCenterX(),
+						labelState.text.boundingBox.getCenterY());
+				}
+				else
+				{
+					tmp = (graph.model.isEdge(currentStyleTarget.cell)) ?
+						graph.view.getPoint(currentStyleTarget) :
+						new mxPoint(currentStyleTarget.getCenterX(),
+							currentStyleTarget.getCenterY());
+				}
+
 				tmp = new mxRectangle(tmp.x - this.refreshTarget.width / 2, tmp.y - this.refreshTarget.height / 2,
 					this.refreshTarget.width, this.refreshTarget.height);
-				
+
 				styleTarget.style.left = Math.floor(tmp.x) + 'px';
 				styleTarget.style.top = Math.floor(tmp.y) + 'px';
-				
+
 				if (styleTargetParent == null)
 				{
 					graph.container.appendChild(styleTarget);
 					styleTargetParent = styleTarget.parentNode;
 				}
-				
+
+				styleTargetBounds = tmp;
 				checkArrow(x, y, tmp, styleTarget);
 			}
 		}
-		// Does not reset on ignored edges
-		else if (currentStyleTarget == null || !mxUtils.contains(currentStyleTarget, x, y) ||
+		// Does not reset on ignored edges or inside the icon bounds
+		else if (currentStyleTarget == null || !(mxUtils.contains(currentStyleTarget, x, y) ||
+			(styleTargetBounds != null && mxUtils.contains(styleTargetBounds, x, y))) ||
 			(timeOnTarget > 1500 && !mxEvent.isShiftDown(evt)))
 		{
 			currentStyleTarget = null;
-			
+			styleTargetBounds = null;
+			styleTargetLabel = false;
+
 			if (styleTargetParent != null)
 			{
 				styleTarget.parentNode.removeChild(styleTarget);
 				styleTargetParent = null;
 			}
 		}
-		else if (currentStyleTarget != null && styleTargetParent != null)
+		else if (currentStyleTarget != null && styleTargetParent != null &&
+			styleTargetBounds != null)
 		{
 			// Sets active Arrow as side effect
-			var tmp = (graph.model.isEdge(currentStyleTarget.cell)) ? graph.view.getPoint(currentStyleTarget) :
-				new mxPoint(currentStyleTarget.getCenterX(), currentStyleTarget.getCenterY());
-			tmp = new mxRectangle(tmp.x - this.refreshTarget.width / 2, tmp.y - this.refreshTarget.height / 2,
-				this.refreshTarget.width, this.refreshTarget.height);
-			checkArrow(x, y, tmp, styleTarget);
+			checkArrow(x, y, styleTargetBounds, styleTarget);
 		}
 		
 		// Checks if inside bounds
@@ -4508,6 +5491,8 @@ Sidebar.prototype.createDragSource = function(elt, dropHandler, preview, cells, 
 		currentStateHandle = null;
 		currentTargetState = null;
 		currentStyleTarget = null;
+		styleTargetBounds = null;
+		styleTargetLabel = false;
 		styleTargetParent = null;
 		activeArrow = null;
 	};
@@ -4739,12 +5724,12 @@ Sidebar.prototype.createVertexTemplateFromData = function(data, width, height, t
  */
 Sidebar.prototype.createVertexTemplateFromCells = function(cells, width, height, title, showLabel,
 	showTitle, allowCellsInserted, showTooltip, clickFn, thumbWidth, thumbHeight, icon, startEditing,
-	sourceCell)
+	sourceCell, connectEdge)
 {
 	// Use this line to convert calls to this function with lots of boilerplate code for creating cells
 	//console.trace('xml', Graph.compress(mxUtils.getXml(this.graph.encodeCells(cells))), cells);
 	return this.createItem(cells, title, showLabel, showTitle, width, height, allowCellsInserted,
-		showTooltip, clickFn, thumbWidth, thumbHeight, icon, startEditing, sourceCell);
+		showTooltip, clickFn, thumbWidth, thumbHeight, icon, startEditing, sourceCell, undefined, connectEdge);
 };
 
 /**
@@ -4791,7 +5776,7 @@ Sidebar.prototype.createEdgeTemplateFromCells = function(cells, width, height, t
  */
 Sidebar.prototype.addPaletteFunctions = function(id, title, expanded, fns)
 {
-	this.addPalette(id, title, expanded, mxUtils.bind(this, function(content)
+	var div = this.addPalette(id, title, expanded, mxUtils.bind(this, function(content)
 	{
 		for (var i = 0; i < fns.length; i++)
 		{
@@ -4803,19 +5788,26 @@ Sidebar.prototype.addPaletteFunctions = function(id, title, expanded, fns)
 			}
 		}
 	}));
+
+	this.setDeferredPaletteSize(div, fns.length);
+
+	return div;
 };
 
 /**
- * Adds the given palette.
+ * Adds the given palette. The optional eager flag forces the content
+ * to be created synchronously when expanded, bypassing the deferred
+ * virtualPalettes path — used for interactive palettes (user
+ * libraries, scratchpad) whose content is accessed programmatically.
  */
-Sidebar.prototype.addPalette = function(id, title, expanded, onInit)
+Sidebar.prototype.addPalette = function(id, title, expanded, onInit, eager)
 {
 	var elt = this.createTitle(title);
 	this.appendChild(elt);
-	
+
 	var div = document.createElement('div');
 	div.className = 'geSidebar';
-	
+
 	// Disables built-in pan and zoom on touch devices
 	if (mxClient.IS_POINTER)
 	{
@@ -4824,14 +5816,22 @@ Sidebar.prototype.addPalette = function(id, title, expanded, onInit)
 
 	if (expanded && this.expandLibraries)
 	{
-		onInit(div);
+		if (this.virtualPalettes && !eager)
+		{
+			this.deferPaletteInit(div, elt, onInit);
+		}
+		else
+		{
+			onInit(div, elt);
+		}
+
 		onInit = null;
 	}
 	else
 	{
 		div.style.display = 'none';
 	}
-	
+
     this.addFoldingHandler(elt, div, onInit);
 	
 	var outer = document.createElement('div');
@@ -4872,22 +5872,32 @@ Sidebar.prototype.addFoldingHandler = function(title, content, funct)
 				if (!initialized)
 				{
 					initialized = true;
-					
-					if (funct != null)
+
+					if (funct != null && this.virtualPalettes)
+					{
+						// Shows the palette immediately and lets the
+						// observer create the content when it scrolls
+						// into view (right away if the palette is in
+						// view, but Expand All stays cheap for the
+						// off-screen palettes)
+						this.deferPaletteInit(content, title, funct);
+						this.setContentVisible(content, true);
+					}
+					else if (funct != null)
 					{
 						// Wait cursor does not show up on Mac
 						title.style.cursor = 'wait';
 
 						// Captures child nodes
 						var children = [];
-						
+
 						for (var i = 0; i < title.children.length; i++)
 						{
 							children.push(title.children[i]);
 						}
 
 						title.innerHTML = mxResources.get('loading') + '...';
-						
+
 						window.setTimeout(mxUtils.bind(this, function()
 						{
 							this.setContentVisible(content, true);
@@ -4974,19 +5984,20 @@ Sidebar.prototype.setContentVisible = function(content, visible)
 Sidebar.prototype.removePalette = function(id)
 {
 	var elts = this.palettes[id];
-	
+
 	if (elts != null)
 	{
 		this.palettes[id] = null;
-		
+
 		for (var i = 0; i < elts.length; i++)
 		{
+			this.unobserveElements(elts[i]);
 			this.container.removeChild(elts[i]);
 		}
-		
+
 		return true;
 	}
-	
+
 	return false;
 };
 

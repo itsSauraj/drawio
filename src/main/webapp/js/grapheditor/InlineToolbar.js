@@ -364,10 +364,7 @@ InlineToolbar.prototype.hide = function()
  */
 InlineToolbar.prototype.supportsCurvedBend = function(style)
 {
-	var shape = mxUtils.getValue(style, mxConstants.STYLE_SHAPE, null);
-
-	return shape == null || shape == 'connector' ||
-		shape == 'filledEdge' || shape == 'wire' || shape == 'pipe';
+	return Graph.edgeSupportsCurved(style);
 };
 
 /**
@@ -627,28 +624,40 @@ InlineToolbar.prototype.repaint = function()
 };
 
 /**
- * Returns the index of the active edge style item.
+ * Clamps a position (in container scroll coordinates) so an element of the
+ * given size stays within the container's visible viewport. When the element
+ * is larger than the viewport along an axis it is pinned to the top/left edge
+ * so its start stays visible. Returns the clamped point.
  */
-InlineToolbar.prototype.getActiveEdgeStyleIndex = function(items, style)
+InlineToolbar.prototype.clampToContainer = function(x, y, w, h)
+{
+	var c = this.graph.container;
+	var minX = c.scrollLeft + 4;
+	var maxX = c.scrollLeft + c.clientWidth - w - 4;
+	var minY = c.scrollTop + 4;
+	var maxY = c.scrollTop + c.clientHeight - h - 4;
+
+	return new mxPoint(
+		(maxX > minX) ? Math.max(minX, Math.min(x, maxX)) : minX,
+		(maxY > minY) ? Math.max(minY, Math.min(y, maxY)) : minY);
+};
+
+/**
+ * Returns the index of the item whose icon matches the given image source,
+ * or -1 if none matches. The routing and shape sections mirror the Format
+ * panel's "waypoints" and "connection" dropdowns, which resolve the current
+ * cell style to exactly one icon via EditorUi.getImageForEdgeStyle /
+ * getImageForEdgeShape. Selecting the item that carries that canonical icon
+ * keeps the inline toolbar's highlight in sync with the Format panel and
+ * guarantees a single active item, even when the edge carries unrelated
+ * style attributes (dash pattern, arrow sizes, width) that a strict
+ * key/value match would trip over.
+ */
+InlineToolbar.prototype.getActiveIndexForImage = function(items, imageSrc)
 {
 	for (var i = 0; i < items.length; i++)
 	{
-		var item = items[i];
-		var match = true;
-
-		for (var j = 0; j < item.keys.length; j++)
-		{
-			var val = item.values[j];
-			var cur = mxUtils.getValue(style, item.keys[j], null);
-
-			if ((val == null ? null : String(val)) != (cur == null ? null : String(cur)))
-			{
-				match = false;
-				break;
-			}
-		}
-
-		if (match)
+		if (items[i].img === imageSrc)
 		{
 			return i;
 		}
@@ -746,9 +755,15 @@ InlineToolbar.prototype.createPopover = function(anchorBtn, opts)
 		var btnCenterX = btnRect.left + btnRect.width / 2 - containerRect.left + scrollLeft;
 		var popX = btnCenterX - popoverWidth / 2;
 
-		// Check if popover fits below the toolbar within the viewport
-		var spaceBelow = window.innerHeight - toolbarRect.bottom;
-		var showAbove = spaceBelow < popoverHeight + 4;
+		// Decide above/below from the room available on each side WITHIN the
+		// container's visible viewport (not the window — the inline editor's
+		// container can be shorter than the window). Prefer below; flip above
+		// only when below does not fit and above is the roomier side.
+		var spaceAbove = toolbarRect.top - containerRect.top;
+		var spaceBelow = (containerRect.top + container.clientHeight) - toolbarRect.bottom;
+		var fitsBelow = spaceBelow >= popoverHeight + 4;
+		var fitsAbove = spaceAbove >= popoverHeight + 4;
+		var showAbove = !fitsBelow && (fitsAbove || spaceAbove > spaceBelow);
 		var popY;
 
 		if (showAbove)
@@ -769,12 +784,20 @@ InlineToolbar.prototype.createPopover = function(anchorBtn, opts)
 			popY = toolbarRect.bottom - containerRect.top + scrollTop + 2;
 		}
 
-		var minX = scrollLeft + 4;
-		var maxX = scrollLeft + container.clientWidth - popoverWidth - 4;
+		// Clamp to the visible viewport so the popover is never clipped by a
+		// container edge (e.g. the inline editor's top border).
+		var unclampedY = popY;
+		var clamped = this.clampToContainer(popX, popY, popoverWidth, popoverHeight);
+		popX = clamped.x;
+		popY = clamped.y;
 
-		if (maxX > minX)
+		// In the degenerate case where the popover fits on neither side and the
+		// clamp detaches it from the toolbar edge, the fixed arrow would point
+		// at empty space — hide it rather than show a dangling pointer.
+		if (popY != unclampedY)
 		{
-			popX = Math.max(minX, Math.min(popX, maxX));
+			arrowBorder.style.display = 'none';
+			arrowFill.style.display = 'none';
 		}
 
 		popover.style.left = Math.round(popX) + 'px';
@@ -929,7 +952,101 @@ InlineToolbar.prototype.buildIconGrid = function(body, items, activeIndex, callb
 };
 
 /**
- * Shows the line style popover: dash pattern, stroke width, stroke color.
+ * Creates a clickable color swatch that opens the color picker for the
+ * given style key and applies the chosen color to the given cells.
+ * Picking a color (or closing the picker) hides the toolbar, matching
+ * the behaviour of the other color swatches.
+ */
+InlineToolbar.prototype.createColorSwatch = function(title, currentColor, styleKey, defaultColorValue)
+{
+	var graph = this.graph;
+	var swatch = document.createElement('div');
+	swatch.style.width = '28px';
+	swatch.style.height = '28px';
+	swatch.style.borderRadius = '6px';
+	swatch.style.border = '1px solid light-dark(#d0d0d0, #505050)';
+	swatch.style.cursor = 'pointer';
+	swatch.style.boxSizing = 'border-box';
+	swatch.style.flexShrink = '0';
+	swatch.setAttribute('title', title);
+
+	var updateSwatch = function(color)
+	{
+		if (color == null || color == 'none')
+		{
+			swatch.style.background = 'linear-gradient(135deg, white 45%, red 45%, red 55%, white 55%)';
+			swatch.style.backgroundColor = '';
+		}
+		else
+		{
+			var cssColor = mxUtils.getLightDarkColor(color);
+
+			if (mxUtils.isLightDarkColor(color) &&
+				cssColor.light != cssColor.dark)
+			{
+				swatch.style.background = 'linear-gradient(to right bottom, ' +
+					cssColor.cssText + ' 50%, ' + mxUtils.invertLightDarkColor(cssColor).
+					cssText + ' 50.3%)';
+			}
+			else
+			{
+				swatch.style.background = '';
+				swatch.style.backgroundColor = cssColor.cssText;
+			}
+		}
+	};
+
+	updateSwatch(currentColor);
+
+	mxEvent.addListener(swatch, 'click', mxUtils.bind(this, function(e)
+	{
+		// Reads the current selection's color for this style key. The color
+		// picker is a non-modal window that stays open across selection
+		// changes; passing this lets ColorWindow re-sync its swatch to the
+		// new selection (it refreshes from getColorFn on selectionChange/
+		// styleChanged), matching the Format panel and font color menus.
+		var getColorFn = function()
+		{
+			var cell = graph.getSelectionCell();
+			var cellStyle = (cell != null) ? graph.getCellStyle(cell, false) : null;
+
+			return (cellStyle != null) ? (cellStyle[styleKey] || mxConstants.NONE) :
+				mxConstants.NONE;
+		};
+
+		this.editorUi.pickColor(getColorFn(),
+			mxUtils.bind(this, function(color)
+			{
+				// Apply to the live selection read at apply time, not the cells
+				// captured when the swatch was built. Same reason as above:
+				// the selection may have changed while the picker was open.
+				graph.stopEditing(false);
+				graph.setCellStyles(styleKey, color, this.editorUi.getSelectionState().cells);
+				this.hide();
+			}), 'default', defaultColorValue, null, title, getColorFn);
+
+		var cw = this.editorUi.colorWindow;
+
+		if (cw != null)
+		{
+			var hideListener = mxUtils.bind(this, function()
+			{
+				cw.window.removeListener(hideListener);
+				this.hide();
+			});
+
+			cw.window.addListener(mxEvent.HIDE, hideListener);
+		}
+
+		mxEvent.consume(e);
+	}));
+
+	return swatch;
+};
+
+/**
+ * Shows the line style popover: dash pattern, stroke width, stroke color
+ * and, for edge shapes that support them, fill and gradient color.
  */
 InlineToolbar.prototype.showLineStyleMenu = function(evt)
 {
@@ -1151,18 +1268,14 @@ InlineToolbar.prototype.showLineStyleMenu = function(evt)
 		var scrollLeft = container.scrollLeft;
 		var scrollTop = container.scrollTop;
 
-		var panelX = ddRect.left - containerRect.left + scrollLeft;
-		var panelY = ddRect.bottom - containerRect.top + scrollTop + 4;
-		var minX = scrollLeft + 4;
-		var maxX = scrollLeft + container.clientWidth - panel.offsetWidth - 4;
+		// Position below the dropdown, clamped to the visible viewport.
+		var clamped = this.clampToContainer(
+			ddRect.left - containerRect.left + scrollLeft,
+			ddRect.bottom - containerRect.top + scrollTop + 4,
+			panel.offsetWidth, panel.offsetHeight);
 
-		if (maxX > minX)
-		{
-			panelX = Math.max(minX, Math.min(panelX, maxX));
-		}
-
-		panel.style.left = Math.round(panelX) + 'px';
-		panel.style.top = Math.round(panelY) + 'px';
+		panel.style.left = Math.round(clamped.x) + 'px';
+		panel.style.top = Math.round(clamped.y) + 'px';
 
 		mxEvent.consume(e);
 	}));
@@ -1283,75 +1396,60 @@ InlineToolbar.prototype.showLineStyleMenu = function(evt)
 	widthContainer.appendChild(stepperDiv);
 	row2.appendChild(widthContainer);
 
-	// Color swatch
+	// Stroke color swatch
 	var strokeColor = mxUtils.getValue(style, mxConstants.STYLE_STROKECOLOR, '#000000');
-	var swatch = document.createElement('div');
-	swatch.style.width = '28px';
-	swatch.style.height = '28px';
-	swatch.style.borderRadius = '6px';
-	swatch.style.border = '1px solid light-dark(#d0d0d0, #505050)';
-	swatch.style.cursor = 'pointer';
-	swatch.style.boxSizing = 'border-box';
-	swatch.style.flexShrink = '0';
-	swatch.setAttribute('title', mxResources.get('strokeColor'));
-
-	function updateSwatch(color)
-	{
-		if (color == null || color == 'none')
-		{
-			swatch.style.background = 'linear-gradient(135deg, white 45%, red 45%, red 55%, white 55%)';
-			swatch.style.backgroundColor = '';
-		}
-		else
-		{
-			var cssColor = mxUtils.getLightDarkColor(color);
-
-			if (mxUtils.isLightDarkColor(color) &&
-				cssColor.light != cssColor.dark)
-			{
-				swatch.style.background = 'linear-gradient(to right bottom, ' +
-					cssColor.cssText + ' 50%, ' + mxUtils.invertLightDarkColor(cssColor).
-					cssText + ' 50.3%)';
-			}
-			else
-			{
-				swatch.style.background = '';
-				swatch.style.backgroundColor = cssColor.cssText;
-			}
-		}
-	};
-
-	updateSwatch(strokeColor);
-
-	mxEvent.addListener(swatch, 'click', mxUtils.bind(this, function(e)
-	{
-		this.editorUi.pickColor(strokeColor != 'none' ? strokeColor : null,
-			mxUtils.bind(this, function(color)
-			{
-				graph.stopEditing(false);
-				graph.setCellStyles(mxConstants.STYLE_STROKECOLOR, color, cells);
-				this.hide();
-			}), 'default', graph.shapeForegroundColor, null,
-			mxResources.get('strokeColor'));
-
-		var cw = this.editorUi.colorWindow;
-
-		if (cw != null)
-		{
-			var hideListener = mxUtils.bind(this, function()
-			{
-				cw.window.removeListener(hideListener);
-				this.hide();
-			});
-
-			cw.window.addListener(mxEvent.HIDE, hideListener);
-		}
-
-		mxEvent.consume(e);
-	}));
-
-	row2.appendChild(swatch);
+	row2.appendChild(this.createColorSwatch(mxResources.get('strokeColor'),
+		strokeColor, mxConstants.STYLE_STROKECOLOR, graph.shapeForegroundColor));
 	body.appendChild(row2);
+
+	// Row 3: Fill and gradient color, shown only for edge shapes that
+	// support them (filled edge, flex arrow, arrow, pipe, wire, …).
+	var state = this.currentState;
+
+	if (state != null && graph.isFillState(state))
+	{
+		var fillColor = mxUtils.getValue(style, mxConstants.STYLE_FILLCOLOR, null);
+		var row3 = document.createElement('div');
+		row3.style.display = 'flex';
+		row3.style.alignItems = 'center';
+		row3.style.gap = '6px';
+		row3.style.marginTop = '8px';
+
+		var addColorGroup = mxUtils.bind(this, function(labelText, title, color,
+			styleKey, defaultColorValue, extraGap)
+		{
+			var label = document.createElement('span');
+			label.style.fontSize = '11px';
+			label.style.color = 'light-dark(#333, #ccc)';
+
+			if (extraGap)
+			{
+				label.style.marginLeft = '8px';
+			}
+
+			mxUtils.write(label, labelText);
+			row3.appendChild(label);
+			row3.appendChild(this.createColorSwatch(title, color, styleKey,
+				defaultColorValue));
+		});
+
+		addColorGroup(mxResources.get('fill'), mxResources.get('fillColor'),
+			fillColor, mxConstants.STYLE_FILLCOLOR, graph.shapeBackgroundColor, false);
+
+		// Gradient needs a fill color and a shape that supports gradients
+		// (excludes wire/pipe).
+		if (graph.isGradientState(state) && fillColor != null &&
+			fillColor != mxConstants.NONE)
+		{
+			var gradientColor = mxUtils.getValue(style,
+				mxConstants.STYLE_GRADIENTCOLOR, null);
+			addColorGroup(mxResources.get('gradient'), mxResources.get('gradientColor'),
+				gradientColor, mxConstants.STYLE_GRADIENTCOLOR,
+				graph.shapeForegroundColor, true);
+		}
+
+		body.appendChild(row3);
+	}
 
 	// Position and animate
 	p.position();
@@ -1752,21 +1850,15 @@ InlineToolbar.prototype.showMarkerSubPanel = function(dropdown, prefix, items, c
 	var scrollLeft = container.scrollLeft;
 	var scrollTop = container.scrollTop;
 
-	var panelWidth = panel.offsetWidth;
-	var panelX = dropdownRect.left - containerRect.left + scrollLeft;
-	var panelY = dropdownRect.bottom - containerRect.top + scrollTop + 4;
+	// Clamp to the visible viewport (both axes) so a panel near the bottom
+	// edge shifts up to stay visible instead of being clipped.
+	var clamped = this.clampToContainer(
+		dropdownRect.left - containerRect.left + scrollLeft,
+		dropdownRect.bottom - containerRect.top + scrollTop + 4,
+		panel.offsetWidth, panel.offsetHeight);
 
-	// Keep within visible viewport
-	var minX = scrollLeft + 4;
-	var maxX = scrollLeft + container.clientWidth - panelWidth - 4;
-
-	if (maxX > minX)
-	{
-		panelX = Math.max(minX, Math.min(panelX, maxX));
-	}
-
-	panel.style.left = Math.round(panelX) + 'px';
-	panel.style.top = Math.round(panelY) + 'px';
+	panel.style.left = Math.round(clamped.x) + 'px';
+	panel.style.top = Math.round(clamped.y) + 'px';
 };
 
 /**
@@ -1806,6 +1898,7 @@ InlineToolbar.prototype.showConnStyleMenu = function(evt)
 		try
 		{
 			var selCells = graph.getSelectionCells();
+			var edges = [];
 
 			for (var i = 0; i < selCells.length; i++)
 			{
@@ -1827,7 +1920,16 @@ InlineToolbar.prototype.showConnStyleMenu = function(evt)
 					{
 						graph.setCellStyles(item.keys[j], item.values[j], [selCells[i]]);
 					}
+
+					edges.push(selCells[i]);
 				}
+			}
+
+			// Optional follow-up inside the same update (libavoid routes the edges
+			// immediately after the style is applied, atomically with it).
+			if (item.postFn != null)
+			{
+				item.postFn(graph, edges);
 			}
 		}
 		finally
@@ -1853,41 +1955,57 @@ InlineToolbar.prototype.showConnStyleMenu = function(evt)
 
 	if (shape != 'arrow')
 	{
+		// Each routing item also carries libavoidRouting so picking any plain
+		// routing clears the flag, keeping the choices mutually exclusive. The
+		// active-item highlight is resolved via getImageForEdgeStyle, which
+		// already distinguishes a libavoid edge from a plain orthogonal one.
 		routingItems.push({img: Format.straightImage.src, title: mxResources.get('straight'),
-			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-			values: [null, null, null], reset: true});
+			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+			values: [null, null, null, null], reset: true});
 		routingItems.push({img: Format.orthogonalImage.src, title: mxResources.get('orthogonal'),
-			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-			values: ['orthogonalEdgeStyle', null, null], reset: true});
-		routingItems.push({img: Format.verticalElbowImage.src, title: mxResources.get('horizontal'),
-			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-			values: ['elbowEdgeStyle', 'vertical', null, null], reset: true});
-		routingItems.push({img: Format.horizontalElbowImage.src, title: mxResources.get('vertical'),
-			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-			values: ['elbowEdgeStyle', null, null, null], reset: true});
-		routingItems.push({img: Format.horizontalIsometricImage.src, title: mxResources.get('isometric'),
-			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-			values: ['isometricEdgeStyle', null, null, null], reset: true});
-		routingItems.push({img: Format.verticalIsometricImage.src, title: mxResources.get('isometric'),
-			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-			values: ['isometricEdgeStyle', 'vertical', null, null], reset: true});
+			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+			values: ['orthogonalEdgeStyle', null, null, null], reset: true});
 
-		if (shape == null || shape == 'connector')
+		// Shown only when the libavoid extensions bundle is loaded (a no-op in
+		// viewers / configs without extensions.min.js).
+		if (typeof LibavoidRouting !== 'undefined')
+		{
+			routingItems.push({img: Format.libavoidImage.src, title: mxResources.get('libavoidAutoRoute'),
+				keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				values: ['orthogonalEdgeStyle', null, null, '1'], reset: true,
+				postFn: function(graph, edges) { LibavoidRouting.autoReroute(graph, edges); }});
+		}
+
+		routingItems.push({img: Format.verticalElbowImage.src, title: mxResources.get('horizontal'),
+			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+			values: ['elbowEdgeStyle', 'vertical', null, null, null], reset: true});
+		routingItems.push({img: Format.horizontalElbowImage.src, title: mxResources.get('vertical'),
+			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+			values: ['elbowEdgeStyle', null, null, null, null], reset: true});
+		routingItems.push({img: Format.horizontalIsometricImage.src, title: mxResources.get('isometric'),
+			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+			values: ['isometricEdgeStyle', null, null, null, null], reset: true});
+		routingItems.push({img: Format.verticalIsometricImage.src, title: mxResources.get('isometric'),
+			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_ELBOW, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+			values: ['isometricEdgeStyle', 'vertical', null, null, null], reset: true});
+
+		if (this.supportsCurvedBend(style))
 		{
 			routingItems.push({img: Format.curvedImage.src, title: mxResources.get('curved'),
-				keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-				values: ['orthogonalEdgeStyle', '1', null], reset: true});
+				keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+				values: ['orthogonalEdgeStyle', '1', null, null], reset: true});
 		}
 
 		routingItems.push({img: Format.entityImage.src, title: mxResources.get('entityRelation'),
-			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE],
-			values: ['entityRelationEdgeStyle', null, null], reset: true});
+			keys: [mxConstants.STYLE_EDGE, mxConstants.STYLE_CURVED, mxConstants.STYLE_NOEDGESTYLE, 'libavoidRouting'],
+			values: ['entityRelationEdgeStyle', null, null, null], reset: true});
 	}
 
 	if (routingItems.length > 0)
 	{
 		this.buildIconGrid(body, routingItems,
-			this.getActiveEdgeStyleIndex(routingItems, style), applyItem);
+			this.getActiveIndexForImage(routingItems,
+				this.editorUi.getImageForEdgeStyle(style)), applyItem);
 	}
 
 	// Section 2: Edge shape
@@ -1916,7 +2034,8 @@ InlineToolbar.prototype.showConnStyleMenu = function(evt)
 	}
 
 	this.buildIconGrid(body, shapeItems,
-		this.getActiveEdgeStyleIndex(shapeItems, style), applyItem);
+		this.getActiveIndexForImage(shapeItems,
+			this.editorUi.getImageForEdgeShape(style)), applyItem);
 
 	// Section 3: Bend style
 	var bendKeys = [mxConstants.STYLE_ROUNDED, mxConstants.STYLE_CURVED];

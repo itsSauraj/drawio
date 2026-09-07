@@ -32,8 +32,10 @@ window.DRAWIO_BASE_URL = window.DRAWIO_BASE_URL || ((/.*\.draw\.io$/.test(window
 window.DRAWIO_SERVER_URL = window.DRAWIO_SERVER_URL || window.location.origin +
 	window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/')) + '/';
 window.DRAWIO_LIGHTBOX_URL = window.DRAWIO_LIGHTBOX_URL || 'https://viewer.diagrams.net';
-window.EXPORT_URL = window.EXPORT_URL || 'https://convert.diagrams.net/node/export';
-window.PLANT_URL = window.PLANT_URL || 'https://plant-aws.diagrams.net';
+// Defaults only if unset so that a pre-configuration can set null to disable
+// server-side export (see EditorUi.isRemoteExportEnabled)
+window.EXPORT_URL = (typeof window.EXPORT_URL === 'undefined') ?
+	'https://convert.diagrams.net/node/export' : window.EXPORT_URL;
 window.DRAW_MATH_URL = window.DRAW_MATH_URL || 'math4/es5';
 window.VSS_CONVERT_URL = window.VSS_CONVERT_URL || 'https://convert.diagrams.net/VsdConverter/api/converter';
 window.REALTIME_URL = window.REALTIME_URL || window.DRAWIO_SERVER_URL + 'cache';
@@ -44,7 +46,6 @@ window.DRAWIO_GITHUB_API_URL = window.DRAWIO_GITHUB_API_URL || 'https://api.gith
 window.DRAWIO_GITHUB_ID = window.DRAWIO_GITHUB_ID || 'Iv1.98d62f0431e40543';
 window.DRAWIO_DROPBOX_ID = window.DRAWIO_DROPBOX_ID || 'jg02tc0onwmhlgm';
 window.SAVE_URL = window.SAVE_URL || window.DRAWIO_SERVER_URL + 'save';
-window.OPEN_URL = window.OPEN_URL || window.DRAWIO_SERVER_URL + 'import';
 window.PROXY_URL = window.PROXY_URL || window.DRAWIO_SERVER_URL + 'proxy';
 window.DRAWIO_VIEWER_URL = window.DRAWIO_VIEWER_URL || null;
 window.NOTIFICATIONS_URL = window.NOTIFICATIONS_URL || ((/.*\.draw\.io$/.test(window.location.hostname)) ||
@@ -52,6 +53,12 @@ window.NOTIFICATIONS_URL = window.NOTIFICATIONS_URL || ((/.*\.draw\.io$/.test(wi
 	window.DRAWIO_SERVER_URL + 'notifications' : null);
 window.RT_WEBSOCKET_URL = window.RT_WEBSOCKET_URL || ('wss://' + ((window.location.hostname == 'test.draw.io') ?
 	'app.diagrams.net' : window.location.hostname) + '/rt');
+// Maximum AI prompt length on the Atlassian deployments (applied to
+// Editor.maxPublicPromptLength on ac.draw.io / aj.draw.io / Forge CDN hosts,
+// 0 disables the limit); must not exceed the generate/v3 worker's
+// MAX_PROMPT_LENGTH_ATLASSIAN, which enforces the server-side cap
+window.DRAWIO_ATLASSIAN_PROMPT_LENGTH = (window.DRAWIO_ATLASSIAN_PROMPT_LENGTH != null) ?
+	window.DRAWIO_ATLASSIAN_PROMPT_LENGTH : 100000;
 
 // Paths and files
 window.SHAPES_PATH = window.SHAPES_PATH || 'shapes';
@@ -59,6 +66,11 @@ window.SHAPES_PATH = window.SHAPES_PATH || 'shapes';
 window.GRAPH_IMAGE_PATH = window.GRAPH_IMAGE_PATH || 'img';
 window.ICONSEARCH_PATH = window.ICONSEARCH_PATH || (urlParams['dev'] && window.location.protocol != 'file:' ?
 	'iconSearch2' : window.DRAWIO_SERVER_URL + 'iconSearch2');
+// Grouped icon search service (v3): returns icon sets alongside results
+// and supports server-side data URI inlining. Takes precedence over
+// ICONSEARCH_PATH in the sidebar search when defined.
+window.ICON_SERVICE_PATH = window.ICON_SERVICE_PATH || (urlParams['dev'] && window.location.protocol != 'file:' ?
+	'api/icons' : window.DRAWIO_SERVER_URL + 'api/icons');
 window.TEMPLATE_PATH = window.TEMPLATE_PATH || 'templates';
 window.NEW_DIAGRAM_CATS_PATH = window.NEW_DIAGRAM_CATS_PATH || 'newDiagramCats';
 window.PLUGINS_BASE_PATH = window.PLUGINS_BASE_PATH || '';
@@ -264,6 +276,14 @@ if (urlParams['embedInline'] == '1')
 	urlParams['plugins'] = '0';
 	urlParams['proto'] = 'json';
 	urlParams['prefetchFonts'] = '1';
+
+	// Forces page view off by default so the inline editor matches the
+	// host page while the page setting stored in the file is preserved
+	// (see savedGraphState in Editor.setGraphXml/getGraphXml)
+	if (urlParams['pv'] == null)
+	{
+		urlParams['pv'] = '0';
+	}
 }
 
 /**
@@ -327,57 +347,50 @@ window.uiTheme = window.uiTheme || (function()
 })();
 
 /**
- * Overrides splash URL parameter via local storage
+ * Overrides splash URL parameter via configuration
  */
-(function() 
+(function()
 {
 	if (typeof JSON !== 'undefined')
 	{
-		// Cannot use mxSettings here
-		if (isLocalStorage) 
+		// Cannot use mxSettings or Editor.config here
+		var showSplash = (window.DRAWIO_CONFIG != null) ?
+			window.DRAWIO_CONFIG.showSplashOnStart : null;
+
+		if (isLocalStorage)
 		{
-			try
-			{
-				var key = (urlParams['sketch'] == '1') ? '.sketch-config' : '.drawio-config';
-				var value = localStorage.getItem(key);
-				var showSplash = false;
-				
-				if (value != null)
-				{
-					showSplash = JSON.parse(value).showStartScreen;
-				}
-				
-				if (showSplash == false && urlParams['splash'] == null)
-				{
-					urlParams['splash'] = '0';
-				}
-			}
-			catch (e)
-			{
-				// ignore
-			}
-			
-			// Handles lockdown configuration
+			// Handles lockdown and splash screen configuration
 			try
 			{
 				var value = localStorage.getItem('.configuration');
-				var lockdown = null;
 
 				if (value != null)
 				{
 					var config = JSON.parse(value);
-					lockdown = config.lockdown;
-				}
-				
-				if (lockdown != null)
-				{
-					urlParams['lockdown'] = lockdown;
+
+					if (config != null)
+					{
+						if (config.lockdown != null)
+						{
+							urlParams['lockdown'] = config.lockdown;
+						}
+
+						if (config.showSplashOnStart != null)
+						{
+							showSplash = config.showSplashOnStart;
+						}
+					}
 				}
 			}
 			catch (e)
 			{
 				// ignore
 			}
+		}
+
+		if (showSplash != true && urlParams['splash'] == null)
+		{
+			urlParams['splash'] = '0';
 		}
 	}
 	

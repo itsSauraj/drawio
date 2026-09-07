@@ -155,7 +155,7 @@
 
 			this.addEntry(dt + 'markers', function()
 		   	{
-				s = 'shape=ellipse;perimeter=ellipsePerimeter;fillColor=#ffffff;strokeColor=#BDBDBD;strokeWidth=2;shadow=0;gradientColor=none;fontColor=#757575;align=center;html=1;fontStyle=1;spacingTop=-1;';
+				var s = 'shape=ellipse;perimeter=ellipsePerimeter;fillColor=#ffffff;strokeColor=#BDBDBD;strokeWidth=2;shadow=0;gradientColor=none;fontColor=#757575;align=center;html=1;fontStyle=1;spacingTop=-1;';
 				
 			    var icon1 = new mxCell('1', new mxGeometry(0, 0, 20, 20), s);
 			    icon1.vertex = true;

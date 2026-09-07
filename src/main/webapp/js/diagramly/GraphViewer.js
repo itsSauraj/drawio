@@ -133,6 +133,11 @@ GraphViewer.prototype.showLinkIcons = false;
 GraphViewer.prototype.showTooltipIcons = false;
 
 /**
+ * Specifies if note icons should be shown on shapes. Default is true.
+ */
+GraphViewer.prototype.showNoteIcons = true;
+
+/**
  * Initializes the viewer.
  */
 GraphViewer.prototype.init = function(container, xmlNode, graphConfig)
@@ -163,6 +168,8 @@ GraphViewer.prototype.init = function(container, xmlNode, graphConfig)
 		this.graphConfig['show-link-icons'] : this.showLinkIcons;
 	this.showTooltipIcons = (this.graphConfig['show-tooltip-icons'] != null) ?
 		this.graphConfig['show-tooltip-icons'] : this.showTooltipIcons;
+	this.showNoteIcons = (this.graphConfig['show-note-icons'] != null) ?
+		this.graphConfig['show-note-icons'] : this.showNoteIcons;
 	this.toolbarItems = (this.graphConfig.toolbar != null) ?
 		this.graphConfig.toolbar.split(' ') : [];
 	this.zoomEnabled = mxUtils.indexOf(this.toolbarItems, 'zoom') >= 0;
@@ -298,6 +305,7 @@ GraphViewer.prototype.init = function(container, xmlNode, graphConfig)
 				this.graph.autoScroll = false;
 				this.graph.showLinkIcons = this.showLinkIcons;
 				this.graph.showTooltipIcons = this.showTooltipIcons;
+				this.graph.showNoteIcons = this.showNoteIcons;
 				this.graph.setEnabled(false);
 				
 				if (this.graphConfig['toolbar-nohide'] == true)
@@ -373,7 +381,8 @@ GraphViewer.prototype.init = function(container, xmlNode, graphConfig)
 
 							if (name == 'page')
 							{
-								return diagram.getAttribute('name') || 'Page-' + (self.currentPage + 1);
+								return diagram.getAttribute('name') || mxResources.get('pageWithNumber',
+									[self.currentPage + 1], 'Page-' + (self.currentPage + 1));
 							}
 							else if (name == 'pagenumber')
 							{
@@ -2208,7 +2217,8 @@ GraphViewer.prototype.showLightbox = function(editable, closable, target)
 
 				if (this.graphConfig.hiddenTags == null)
 				{
-					this.graphConfig.hiddenTags = {};
+					// Null prototype: keyed by page ids from the diagram XML
+					this.graphConfig.hiddenTags = Object.create(null);
 				}
 
 				this.graphConfig.hiddenTags[curPageId] =
@@ -2331,7 +2341,8 @@ GraphViewer.prototype.showLocalLightbox = function(container)
 
 		if (this.graphConfig.hiddenTags == null)
 		{
-			this.graphConfig.hiddenTags = {};
+			// Null prototype: keyed by page ids from the diagram XML
+			this.graphConfig.hiddenTags = Object.create(null);
 		}
 
 		this.graphConfig.hiddenTags[curPageId] =
@@ -2364,9 +2375,15 @@ GraphViewer.prototype.showLocalLightbox = function(container)
 	var ui = new EditorUi(new Editor(true), document.createElement('div'), true);
 	this.addListener('darkModeChanged', updateDarkMode);
 	ui.editor.editBlankUrl = this.editBlankUrl;
-	
+
 	// Disables refresh
 	ui.refresh = function() {};
+
+	// The lightbox runs in the host page document, so page switches must not
+	// update the URL (location.replace('#') scrolls the host page to the top)
+	// or overwrite the host page title
+	ui.updateHashObject = function() {};
+	ui.updateDocumentTitle = function() {};
 	
 	// Handles escape keystroke
 	var keydownHandler = mxUtils.bind(this, function(evt)

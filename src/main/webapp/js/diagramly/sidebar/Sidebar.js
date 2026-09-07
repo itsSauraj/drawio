@@ -99,6 +99,8 @@
 
 	Sidebar.prototype.archimate3 = ['Application', 'Business', 'Generic', 'Implementation and Migration', 'Motivation', 'Relationships', 'Strategy', 'Technology'];
 
+	Sidebar.prototype.archimate4 = ['Common', 'Relationships and Junctions', 'Motivation', 'Strategy', 'Business', 'Application', 'Technology', 'Implementation and Migration'];
+
 	Sidebar.prototype.electrical = ['LogicGates', 'Resistors', 'Capacitors', 'Inductors', 'SwitchesRelays', 'Diodes', 'Sources', 'Transistors', 'Misc', 'Audio', 'PlcLadder', 'Abstract', 'Optical', 'VacuumTubes', 'Waveforms', 'Instruments', 'RotMech', 'Transmission'];
 
 	/**
@@ -174,8 +176,10 @@
            	                           {id: 'floorplan', libs: ['floorplan']},
            	                           {id: 'bootstrap', libs: ['bootstrap']},
            	                           {id: 'atlassian', libs: ['atlassian']},
+           	                           {id: 'atlassian2', prefix: 'atlassian2', libs: ['Apps', 'Work Types', 'Logos']},
 	                                   {id: 'fluid_power', libs: ['fluid_power']},
 	                                   {id: 'gmdl', prefix: 'gmdl', libs: Sidebar.prototype.gmdl},
+           	                           {id: 'archimate4', prefix: 'archimate4', libs: Sidebar.prototype.archimate4},
            	                           {id: 'archimate3', prefix: 'archimate3', libs: Sidebar.prototype.archimate3},
            	                           {id: 'archimate', libs: ['archimate']},
            	                           {id: 'webicons', libs: ['webicons', 'weblogos']},
@@ -442,7 +446,8 @@
 							libs.push(entry.id + '.' + k);
 						}
 						
-						this.showPalettes('', libs, visible[entry.id]);
+						// Missing entries must hide the palette or showPalette toggles it
+						this.showPalettes('', libs, visible[entry.id] == true);
 					}
 				}
 			}
@@ -505,7 +510,8 @@
             			{title: mxResources.get('software'),
             			entries: [{title: 'Active Directory', id: 'active_directory', image: IMAGE_PATH + '/sidebar-active_directory.png'},
 								{title: mxResources.get('android'), id: 'android', image: IMAGE_PATH + '/sidebar-android.png'},
-								{title: 'Atlassian', id: 'atlassian', image: IMAGE_PATH + '/sidebar-atlassian.png'},
+								{title: 'Atlassian', id: 'atlassian2', image: IMAGE_PATH + '/sidebar-atlassian2.png'},
+								{title: 'Atlassian (legacy)', id: 'atlassian', image: IMAGE_PATH + '/sidebar-atlassian.png'},
 								{title: mxResources.get('bootstrap'), id: 'bootstrap', image: IMAGE_PATH + '/sidebar-bootstrap.png'},
 								{title: 'C4', id: 'c4', image: IMAGE_PATH + '/sidebar-c4.png'},
 								{title: 'Data Flow Diagram', id: 'dfd', image: IMAGE_PATH + '/sidebar-dfd.png'},
@@ -548,7 +554,8 @@
 								{title: 'Veeam', id: 'veeam2', image: IMAGE_PATH + '/sidebar-veeam.png'},
 								{title: 'VMware', id: 'vvd', image: IMAGE_PATH + '/sidebar-vvd.png'}]},
             			{title: mxResources.get('business'),
-            			entries: [{title: 'ArchiMate 3.2', id: 'archimate3', image: IMAGE_PATH + '/sidebar-archimate3.png'},
+            			entries: [{title: 'ArchiMate 4', id: 'archimate4', image: IMAGE_PATH + '/sidebar-archimate4.png'},
+								{title: 'ArchiMate 3.2', id: 'archimate3', image: IMAGE_PATH + '/sidebar-archimate3.png'},
 								{title: mxResources.get('archiMate21'), id: 'archimate', image: IMAGE_PATH + '/sidebar-archimate.png'},
 								{title: mxResources.get('bpmn') + ' 2.0', id: 'bpmn2', image: IMAGE_PATH + '/sidebar-bpmn.png'},
 								{title: mxResources.get('sysml'), id: 'sysml', image: IMAGE_PATH + '/sidebar-sysml.png'},
@@ -584,7 +591,14 @@
 			var btn = document.createElement('button');
 			btn.style.margin = '0 4px';
 			mxUtils.write(btn, 'Save');
-			
+
+			// Palettes that start expanded never enter the expand branch
+			// below, so the button must be added at install time
+			if (content.style.display != 'none')
+			{
+				title.appendChild(btn);
+			}
+
 			mxEvent.addListener(title, 'click', mxUtils.bind(this, function(evt)
 			{
 				if (mxEvent.getSource(evt).nodeName == 'BUTTON')
@@ -605,12 +619,21 @@
 					canvas.setFontColor('rgb(80, 80, 80)');
 					canvas.setFontSize(14);
 
-					// Extracts title text
+					// Extracts title text from the first span that contains
+					// text, as the first span in the title element is the
+					// invisible collapse/expand hit-area overlay added in
+					// Sidebar.createTitle
 					var spans = title.getElementsByTagName('span');
 
-					if (spans.length > 0)
+					for (var i = 0; i < spans.length; i++)
 					{
-						canvas.text(6, 0, 0, 0, mxUtils.getTextContent(spans[0]));
+						var text = mxUtils.getTextContent(spans[i]);
+
+						if (text != '')
+						{
+							canvas.text(6, 0, 0, 0, text);
+							break;
+						}
 					}
 
 					for (var i = 0; i < svgs.length; i++)
@@ -704,11 +727,11 @@
 	// Overrides addPalette to persist expanded/collapsed library state
 	var sidebarAddPalette = Sidebar.prototype.addPalette;
 
-	Sidebar.prototype.addPalette = function(id, title, expanded, onInit)
+	Sidebar.prototype.addPalette = function(id, title, expanded, onInit, eager)
 	{
 		expanded = this.editorUi.getLibraryExpanded(id, expanded);
 
-		var result = sidebarAddPalette.call(this, id, title, expanded, onInit);
+		var result = sidebarAddPalette.call(this, id, title, expanded, onInit, eager);
 
 		// Tags title and content divs with palette id
 		if (id != null && this.palettes[id] != null)
@@ -729,6 +752,8 @@
 					this.palettes[id][0],
 					this.palettes[id][1], id);
 			}
+
+			this.installPaletteContextMenu(this.palettes[id][0], id);
 
 			// Debounced re-apply of saved order for late-loaded palettes
 			if (this._applyOrderTimer != null)
@@ -925,43 +950,70 @@
 			document.addEventListener(upEvt, upHandler);
 		}));
 
-		// Right-click context menu for reset
+	};
+
+	/**
+	 * Installs a right-click context menu on every palette title with
+	 * Collapse/Expand for the clicked section, Collapse All / Expand All
+	 * for the whole sidebar, and (for reorderable palettes) Reset to
+	 * clear the saved drag order.
+	 */
+	Sidebar.prototype.installPaletteContextMenu = function(title, id)
+	{
+		var sidebar = this;
+
 		mxEvent.addListener(title, 'contextmenu', mxUtils.bind(this, function(evt)
 		{
 			mxEvent.consume(evt);
 
-			if (mxSettings.getLibraryOrder() != null)
-			{
-				var menuDiv = document.createElement('div');
-				menuDiv.className = 'mxPopupMenu geMenubarMenu';
-				menuDiv.style.position = 'absolute';
-				menuDiv.style.zIndex = '10001';
-				menuDiv.style.left = evt.clientX + 'px';
-				menuDiv.style.top = evt.clientY + 'px';
+			var menuDiv = document.createElement('div');
+			menuDiv.className = 'mxPopupMenu geMenubarMenu';
+			menuDiv.style.position = 'absolute';
+			menuDiv.style.zIndex = '10001';
+			menuDiv.style.left = evt.clientX + 'px';
+			menuDiv.style.top = evt.clientY + 'px';
 
-				var table = document.createElement('table');
-				table.className = 'mxPopupMenu';
-				var tbody = document.createElement('tbody');
+			var table = document.createElement('table');
+			table.className = 'mxPopupMenu';
+			var tbody = document.createElement('tbody');
+			table.appendChild(tbody);
+			menuDiv.appendChild(table);
+
+			var hide = function()
+			{
+				if (menuDiv.parentNode != null)
+				{
+					menuDiv.parentNode.removeChild(menuDiv);
+				}
+
+				document.removeEventListener('mousedown', hideMenu);
+			};
+
+			var hideMenu = function(e)
+			{
+				if (!menuDiv.contains(e.target))
+				{
+					hide();
+				}
+			};
+
+			var addItem = function(label, fn)
+			{
 				var tr = document.createElement('tr');
 				tr.className = 'mxPopupMenuItem';
 				var td = document.createElement('td');
 				td.className = 'mxPopupMenuItem';
 				td.style.padding = '6px 10px';
 				td.style.cursor = 'pointer';
-				mxUtils.write(td, mxResources.get('reset'));
+				mxUtils.write(td, label);
 				tr.appendChild(td);
 				tbody.appendChild(tr);
-				table.appendChild(tbody);
-				menuDiv.appendChild(table);
 
-				document.body.appendChild(menuDiv);
-				mxUtils.fit(menuDiv);
-
-				mxEvent.addListener(tr, 'mouseup', mxUtils.bind(this, function()
+				mxEvent.addListener(tr, 'mouseup', function()
 				{
-					sidebar.resetPaletteOrder();
-					document.body.removeChild(menuDiv);
-				}));
+					hide();
+					fn();
+				});
 
 				mxEvent.addListener(tr, 'mouseenter', function()
 				{
@@ -972,23 +1024,87 @@
 				{
 					tr.className = 'mxPopupMenuItem';
 				});
+			};
 
-				var hideMenu = function(e)
+			var addSeparator = function()
+			{
+				var tr = document.createElement('tr');
+				var td = document.createElement('td');
+				td.style.padding = '0';
+				var hr = document.createElement('hr');
+				hr.style.cssText = 'border:none;border-top:1px solid ' +
+					'light-dark(#e0e0e0,#444);margin:4px 0';
+				td.appendChild(hr);
+				tr.appendChild(td);
+				tbody.appendChild(tr);
+			};
+
+			var elts = sidebar.palettes[id];
+			var contentDiv = (elts != null) ? elts[1].firstChild : null;
+			var expanded = contentDiv != null && contentDiv.style.display != 'none';
+
+			addItem(mxResources.get(expanded ? 'collapse' : 'expand'), function()
+			{
+				title.click();
+			});
+
+			addSeparator();
+			addItem(mxResources.get('collapseAll'), function()
+			{
+				sidebar.setAllPalettesExpanded(false);
+			});
+			addItem(mxResources.get('expandAll'), function()
+			{
+				sidebar.setAllPalettesExpanded(true);
+			});
+
+			if (id != 'search' && mxSettings.getLibraryOrder() != null)
+			{
+				addSeparator();
+				addItem(mxResources.get('reset'), function()
 				{
-					if (!menuDiv.contains(e.target))
-					{
-						if (menuDiv.parentNode != null)
-						{
-							menuDiv.parentNode.removeChild(menuDiv);
-						}
-
-						document.removeEventListener('mousedown', hideMenu);
-					}
-				};
-
-				document.addEventListener('mousedown', hideMenu);
+					sidebar.resetPaletteOrder();
+				});
 			}
+
+			document.body.appendChild(menuDiv);
+			mxUtils.fit(menuDiv);
+			document.addEventListener('mousedown', hideMenu);
 		}));
+	};
+
+	/**
+	 * Toggles every palette to the given expanded state by clicking each
+	 * title that doesn't already match. Going through the normal click
+	 * path keeps the arrow icon, lazy init (onInit), and persisted state
+	 * (via setContentVisible override) all in sync.
+	 */
+	Sidebar.prototype.setAllPalettesExpanded = function(expanded)
+	{
+		for (var pid in this.palettes)
+		{
+			var elts = this.palettes[pid];
+
+			if (elts == null)
+			{
+				continue;
+			}
+
+			var titleEl = elts[0];
+			var contentDiv = elts[1].firstChild;
+
+			if (titleEl == null || contentDiv == null)
+			{
+				continue;
+			}
+
+			var currentlyExpanded = contentDiv.style.display != 'none';
+
+			if (currentlyExpanded != expanded)
+			{
+				titleEl.click();
+			}
+		}
 	};
 
 	/**
@@ -1470,6 +1586,7 @@
 		this.addActiveDirectoryPalette();
 		this.addAndroidPalette();
 		this.addAtlassianPalette();
+		this.addAtlassian2Palette();
 		this.addBootstrapPalette();
 		this.addDFDPalette();
 		this.addErPalette();
@@ -1512,6 +1629,7 @@
 		this.addVeeamPalette();
 		this.addVeeam2Palette();
 		this.addVVDPalette();
+		this.addArchimate4Palette();
 		this.addArchimate3Palette();
 		this.addArchiMatePalette();
 		this.addBpmn2Palette();
@@ -1770,24 +1888,484 @@
 	}
 
 	/**
-	 * Extracs icons from the search result.
+	 * Extracs icons from the search result. Entries with a data property
+	 * (server-side inlining, see Editor.inlineExtIcons) produce
+	 * self-contained cells; others reference the remote image URL.
 	 */
 	Sidebar.prototype.extractIconsFromResponse = function(res, results)
 	{
 		for (var i = 0; i < res.images.length; i++)
 		{
-			(mxUtils.bind(this, function(url, width, height)
+			(mxUtils.bind(this, function(img)
 			{
 				results.push(mxUtils.bind(this, function()
 				{
 					return this.createVertexTemplate('shape=image;html=1;verticalAlign=top;' +
 						'verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;' +
-						'aspect=fixed;image=' + url, width, height, '');
+						'aspect=fixed;image=' + ((img.data != null) ? img.data : img.url),
+						img.width, img.height, '');
 				}));
-			}))(res.images[i].url, res.images[i].width, res.images[i].height);
+			}))(res.images[i]);
 		}
 	};
-	
+
+	/**
+	 * Returns true if the grouped icon service (ICON_SERVICE_PATH) is
+	 * available. Falls back to the flat ICONSEARCH_PATH protocol otherwise.
+	 */
+	Sidebar.prototype.isIconServiceEnabled = function()
+	{
+		return typeof ICON_SERVICE_PATH !== 'undefined' && ICON_SERVICE_PATH != null;
+	};
+
+	/**
+	 * Returns the request URL for an icon search page in the active
+	 * protocol.
+	 */
+	Sidebar.prototype.getIconSearchUrl = function(searchTerms, count, page)
+	{
+		return (this.isIconServiceEnabled() ? ICON_SERVICE_PATH + '/search' :
+			ICONSEARCH_PATH) + '?q=' + encodeURIComponent(searchTerms) +
+			'&p=' + page + '&c=' + count +
+			((this.isIconServiceEnabled() && Editor.inlineExtIcons) ? '&inline=1' : '');
+	};
+
+	/**
+	 * Maximum number of chips above the search results (matching built-in
+	 * libraries and icon service sets combined).
+	 */
+	Sidebar.prototype.maxSearchResultChips = 4;
+
+	/**
+	 * Search tokens that never select a built-in library chip on their own
+	 * (they would prefix-match unrelated titles, eg. "and" - Android,
+	 * "off" - Office).
+	 */
+	Sidebar.prototype.libraryChipStopwords = ['and', 'the', 'for', 'with', 'off', 'from'];
+
+	/**
+	 * More Shapes entries that are never offered as chips - superseded
+	 * versions where only the latest library of a family should be
+	 * suggested (all remain available via More Shapes and search).
+	 */
+	Sidebar.prototype.libraryChipExcluded = ['uml', 'aws3', 'aws4b', 'cisco',
+		'network', 'citrix', 'gcp2', 'archimate'];
+
+	/**
+	 * Search ranking weights for superseded libraries - on equal search
+	 * scores, shapes from the latest library of a family rank above the
+	 * ones from its predecessors (eg. "aws" lists AWS 2026 shapes before
+	 * AWS18 and AWS17), independent of the order in which the palettes
+	 * were added to the search index. Only breaks ties, so a demoted
+	 * shape that matches the search terms better still ranks first. The
+	 * default UML library is not demoted as it is enabled by default.
+	 */
+	Sidebar.prototype.librarySearchWeights = {aws3: -2, aws4b: -1,
+		azure: -1, cisco: -1, citrix: -1, gcp2: -1, network: -1,
+		veeam: -1, archimate: -1};
+
+	/**
+	 * Stores the icon sets returned for the given search terms and shows
+	 * them as chips if the results header has already been rendered (the
+	 * sets can arrive before or after the header depending on whether the
+	 * icon request blocked the search callback).
+	 */
+	Sidebar.prototype.setIconSearchSets = function(terms, sets)
+	{
+		this.lastIconSearchSets = {terms: terms, sets: (sets != null) ? sets : []};
+
+		if (this.iconSearchSetsContainer != null &&
+			this.iconSearchSetsTerms == terms)
+		{
+			this.populateIconSearchSets(this.iconSearchSetsContainer,
+				this.lastIconSearchSets.sets);
+		}
+	};
+
+	/**
+	 * Returns the More Shapes entries (built-in libraries) that match the
+	 * given search terms and are not currently shown in the sidebar.
+	 */
+	Sidebar.prototype.getMatchingLibraryChips = function(searchTerms)
+	{
+		var chips = [];
+
+		if (this.entries != null && searchTerms != null)
+		{
+			var tokens = [];
+			var temp = searchTerms.toLowerCase().split(/[^a-z0-9]+/);
+
+			for (var i = 0; i < temp.length; i++)
+			{
+				if (temp[i].length > 1 && mxUtils.indexOf(
+					this.libraryChipStopwords, temp[i]) < 0)
+				{
+					tokens.push(temp[i]);
+				}
+			}
+
+			if (tokens.length > 0)
+			{
+				for (var i = 0; i < this.entries.length; i++)
+				{
+					var section = this.entries[i];
+
+					for (var j = 0; section.entries != null &&
+						j < section.entries.length; j++)
+					{
+						var entry = section.entries[j];
+
+						if (chips.length < this.maxSearchResultChips &&
+							entry.id != 'search' && entry.id != '.scratchpad' &&
+							mxUtils.indexOf(this.libraryChipExcluded, entry.id) < 0 &&
+							this.getConfigurationById(entry.id) != null &&
+							!this.isEntryVisible(entry.id) &&
+							this.isLibraryChipMatch(entry, tokens))
+						{
+							chips.push(entry);
+						}
+					}
+				}
+			}
+		}
+
+		return chips;
+	};
+
+	/**
+	 * Returns true if a search token matches a word of the entry title or
+	 * ID - exact for short tokens, prefix in either direction otherwise
+	 * (eg. "uml" - "UML 2.5"/uml25, "networks" - "Network 2025").
+	 */
+	Sidebar.prototype.isLibraryChipMatch = function(entry, tokens)
+	{
+		var words = (entry.title + ' ' + entry.id).toLowerCase().split(/[^a-z0-9]+/);
+
+		for (var i = 0; i < tokens.length; i++)
+		{
+			for (var j = 0; j < words.length; j++)
+			{
+				var t = tokens[i];
+				var w = words[j];
+
+				if (w.length > 1 && (w == t ||
+					(t.length > 2 && w.substring(0, t.length) == t) ||
+					(w.length > 2 && t.substring(0, w.length) == w)))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	};
+
+	/**
+	 * Shows the given More Shapes entry in the sidebar, persists the change
+	 * like the More Shapes dialog and scrolls to its first palette.
+	 */
+	Sidebar.prototype.enableLibraryEntry = function(id)
+	{
+		var libs = ['search'];
+
+		for (var i = 0; i < this.configuration.length; i++)
+		{
+			var entryId = this.configuration[i].id;
+
+			if (entryId != 'search' && this.isEntryVisible(entryId))
+			{
+				libs.push(entryId);
+			}
+		}
+
+		if (this.customEntries != null)
+		{
+			for (var i = 0; i < this.customEntries.length; i++)
+			{
+				var section = this.customEntries[i] || {};
+
+				for (var j = 0; section.entries != null && j < section.entries.length; j++)
+				{
+					if (this.isEntryVisible(section.entries[j].id))
+					{
+						libs.push(section.entries[j].id);
+					}
+				}
+			}
+		}
+
+		if (mxUtils.indexOf(libs, id) < 0)
+		{
+			libs.push(id);
+		}
+
+		this.showEntries(libs.join(';'), isLocalStorage);
+
+		// Scrolls to the first palette of the entry
+		var config = this.getConfigurationById(id);
+		var lib = (config != null && config.libs != null && config.libs.length > 0) ?
+			((config.prefix != null ? config.prefix : '') + config.libs[0]) : id;
+		this.openLibraries([{id: id, lib: lib}]);
+	};
+
+	/**
+	 * Creates a chip for the search results header.
+	 */
+	Sidebar.prototype.createSearchResultChip = function(label, tooltip)
+	{
+		var dark = Editor.isDarkMode();
+		var chip = document.createElement('div');
+		chip.setAttribute('title', tooltip);
+		chip.style.cssText = 'display:inline-block;max-width:96%;overflow:hidden;' +
+			'text-overflow:ellipsis;white-space:nowrap;cursor:pointer;' +
+			'font-size:11px;padding:2px 8px;margin:0 4px 4px 0;' +
+			'border-radius:10px;border:1px solid ' +
+			(dark ? '#505759' : '#d0d0d0') + ';background:' +
+			(dark ? 'rgba(255,255,255,0.06)' : '#f5f5f5') + ';';
+		mxUtils.write(chip, '+ ' + label);
+
+		return chip;
+	};
+
+	/**
+	 * Returns true if the given icon set's generated library is already in
+	 * the sidebar (mirrors the ID normalization and duplicate check in
+	 * App.loadLibraries, including pending loads).
+	 */
+	Sidebar.prototype.isIconSetInstalled = function(set)
+	{
+		try
+		{
+			var id = encodeURIComponent(decodeURIComponent('U' + set.libraryUrl));
+
+			return (this.editorUi.loadedLibraries != null &&
+				this.editorUi.loadedLibraries[id] != null) ||
+				this.palettes[id] != null;
+		}
+		catch (e)
+		{
+			// ignore
+		}
+
+		return false;
+	};
+
+	/**
+	 * Renders the chip row above the search results: matching built-in
+	 * libraries first (shown in the sidebar on click), then the matching
+	 * icon sets (installed as custom libraries via the existing plumbing,
+	 * persisted in settings, removable via the palette). Sets whose library
+	 * is already installed are skipped. The total is capped at
+	 * maxSearchResultChips so the chips do not overwhelm the actual results.
+	 */
+	Sidebar.prototype.populateIconSearchSets = function(container, sets)
+	{
+		container.innerHTML = '';
+		var entries = (this.iconSearchLibraryChips != null) ?
+			this.iconSearchLibraryChips : [];
+		sets = (sets != null && this.editorUi.loadLibraries != null) ? sets : [];
+		var temp = [];
+
+		for (var i = 0; i < sets.length; i++)
+		{
+			if (!this.isIconSetInstalled(sets[i]))
+			{
+				temp.push(sets[i]);
+			}
+		}
+
+		sets = temp;
+		var max = this.maxSearchResultChips;
+
+		if (entries.length == 0 && sets.length == 0)
+		{
+			container.style.display = 'none';
+			return;
+		}
+
+		container.style.display = 'block';
+
+		for (var i = 0; i < entries.length && i < max; i++)
+		{
+			(mxUtils.bind(this, function(entry)
+			{
+				var chip = this.createSearchResultChip(entry.title,
+					mxResources.get('openLibrary') + ': ' + entry.title);
+
+				// Re-rendered after a click when the icon sets arrive
+				if (this.isEntryVisible(entry.id))
+				{
+					chip.style.opacity = '0.5';
+					chip.style.pointerEvents = 'none';
+				}
+
+				mxEvent.addListener(chip, 'click', mxUtils.bind(this, function(evt)
+				{
+					this.enableLibraryEntry(entry.id);
+					chip.style.opacity = '0.5';
+					chip.style.pointerEvents = 'none';
+					mxEvent.consume(evt);
+				}));
+
+				container.appendChild(chip);
+			}))(entries[i]);
+		}
+
+		for (var i = 0; i < sets.length && entries.length + i < max; i++)
+		{
+			(mxUtils.bind(this, function(set)
+			{
+				var chip = this.createSearchResultChip(set.name + ' (' + set.iconCount + ')',
+					mxResources.get('addToLibrary') + ': ' +
+					set.name + ' (' + set.iconCount + ')');
+
+				mxEvent.addListener(chip, 'click', mxUtils.bind(this, function(evt)
+				{
+					this.editorUi.loadLibraries(['U' + set.libraryUrl]);
+					chip.style.opacity = '0.5';
+					chip.style.pointerEvents = 'none';
+					mxEvent.consume(evt);
+				}));
+
+				container.appendChild(chip);
+			}))(sets[i]);
+		}
+	};
+
+	/**
+	 * Adds the chip row above the first page of search results. Built-in
+	 * library matches are rendered immediately, matching icon sets are
+	 * added when the service response arrives.
+	 */
+	Sidebar.prototype.insertSearchResultsHeader = function(div, searchTerm, page)
+	{
+		if (page == 1)
+		{
+			var chips = this.getMatchingLibraryChips(searchTerm);
+
+			if (chips.length > 0 || (this.isIconServiceEnabled() &&
+				!this.editorUi.isOffline()))
+			{
+				var container = document.createElement('div');
+				container.style.display = 'none';
+				container.style.width = '100%';
+				div.appendChild(container);
+				this.iconSearchSetsContainer = container;
+				this.iconSearchSetsTerms = searchTerm;
+				this.iconSearchLibraryChips = chips;
+
+				if (this.lastIconSearchSets != null &&
+					this.lastIconSearchSets.terms == searchTerm)
+				{
+					this.populateIconSearchSets(container, this.lastIconSearchSets.sets);
+				}
+				else if (chips.length > 0)
+				{
+					this.populateIconSearchSets(container, null);
+				}
+			}
+		}
+	};
+
+	/**
+	 * Fetches the icon sets for the given terms without adding icon results
+	 * (used when the local shape results are plentiful so no icons are
+	 * appended, but matching sets should still be offered).
+	 */
+	Sidebar.prototype.fetchIconSearchSets = function(searchTerms)
+	{
+		mxUtils.get(this.getIconSearchUrl(searchTerms, 8, 0),
+			mxUtils.bind(this, function(req)
+		{
+			try
+			{
+				if (req.getStatus() >= 200 && req.getStatus() <= 299 &&
+					req.getText() != null && req.getText().length > 0)
+				{
+					var res = JSON.parse(req.getText());
+
+					if (res != null && res.sets != null)
+					{
+						this.setIconSearchSets(searchTerms, res.sets);
+					}
+				}
+			}
+			catch (e)
+			{
+				// ignore - chips are optional
+			}
+		}), function()
+		{
+			// ignore - chips are optional
+		});
+	};
+
+	/**
+	 * Queries the icon provider for an image-only search and returns the
+	 * results via the given callback. Used by the "Search Images" omnibox
+	 * option. Pagination is via the 0-based page (p=page); the provider
+	 * uses a fixed page size and ignores the requested count, so "more
+	 * results" is signalled by a non-empty page (paging stops when a page
+	 * comes back empty) rather than by a full page (== count).
+	 */
+	Sidebar.prototype.searchIcons = function(searchTerms, count, page, success)
+	{
+		var results = [];
+
+		mxUtils.get(this.getIconSearchUrl(searchTerms, count, page),
+			mxUtils.bind(this, function(req)
+		{
+			try
+			{
+				// Ignores response if nothing or error returned
+				if (req.getStatus() >= 200 && req.getStatus() <= 299 &&
+					req.getText() != null && req.getText().length > 0)
+				{
+					var res = JSON.parse(req.getText());
+
+					if (res == null || res.images == null)
+					{
+						success(results, page * count, false, searchTerms);
+						this.editorUi.handleError(res);
+					}
+					else
+					{
+						if (res.sets != null)
+						{
+							this.setIconSearchSets(searchTerms, res.sets);
+						}
+
+						this.extractIconsFromResponse(res, results);
+						success(results, page * count + results.length,
+							results.length > 0, searchTerms);
+					}
+				}
+				else
+				{
+					success(results, page * count, false, searchTerms);
+				}
+			}
+			catch (e)
+			{
+				success(results, page * count, false, searchTerms);
+				this.editorUi.handleError(e);
+			}
+		}), mxUtils.bind(this, function()
+		{
+			success(results, page * count, false, searchTerms);
+		}));
+	};
+
+	/**
+	 * Image search is available when an icon provider is configured and the
+	 * editor is online (mirrors the icon results appended to shape search).
+	 */
+	Sidebar.prototype.isImageSearchSupported = function()
+	{
+		return (this.isIconServiceEnabled() || ICONSEARCH_PATH != null) &&
+			!this.editorUi.isOffline();
+	};
+
 	/**
 	 * Returns true if the search index was loaded.
 	 */
@@ -1813,21 +2391,37 @@
 	 */
 	var sidebarSearchEntries = Sidebar.prototype.searchEntries;
 	
-	Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, error, searchClosedLibraries)
+	Sidebar.prototype.searchEntries = function(searchTerms, count, page, success, error, searchClosedLibraries, imagesOnly)
 	{
 		var succ = success;
 		this.updateSearchIndex();
-		
-		if (ICONSEARCH_PATH != null && searchClosedLibraries)
+
+		// Image-only search bypasses the local shape index and queries the
+		// icon provider directly (the "Search Images" omnibox option).
+		if (imagesOnly)
+		{
+			if (this.isImageSearchSupported())
+			{
+				this.searchIcons(searchTerms, count, page, success);
+			}
+			else
+			{
+				success([], 0, false, searchTerms);
+			}
+
+			return;
+		}
+
+		if ((this.isIconServiceEnabled() || ICONSEARCH_PATH != null) && searchClosedLibraries)
 		{
 			success = mxUtils.bind(this, function(results, len, more, terms)
 			{
 				if (!this.editorUi.isOffline() && results.length <= count / 4)
 				{
 					var pg = page - Math.ceil((len - count / 4) / count);
-	
-					mxUtils.get(ICONSEARCH_PATH + '?q=' + encodeURIComponent(searchTerms) +
-						'&p=' + pg + '&c=' + count, mxUtils.bind(this, function(req)
+
+					mxUtils.get(this.getIconSearchUrl(searchTerms, count, pg),
+						mxUtils.bind(this, function(req)
 					{
 						try
 						{
@@ -1838,7 +2432,7 @@
 								try
 								{
 									var res = JSON.parse(req.getText());
-									
+
 									if (res == null || res.images == null)
 									{
 										succ(results, len, false, terms);
@@ -1846,6 +2440,11 @@
 									}
 									else
 									{
+										if (res.sets != null)
+										{
+											this.setIconSearchSets(searchTerms, res.sets);
+										}
+
 										this.extractIconsFromResponse(res, results);
 										succ(results, (page - 1) * count + results.length, res.images.length == count, terms);
 									}
@@ -1874,6 +2473,14 @@
 				}
 				else
 				{
+					// No icon results are appended, but matching sets are
+					// still offered as chips on the first page.
+					if (page == 0 && this.isIconServiceEnabled() &&
+						!this.editorUi.isOffline())
+					{
+						this.fetchIconSearchSets(searchTerms);
+					}
+
 					succ(results, len, more || !this.editorUi.isOffline(), terms);
 				}
 			});

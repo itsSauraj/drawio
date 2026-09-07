@@ -1061,7 +1061,8 @@ mxShape.prototype.configureCanvas = function(c, x, y, w, h)
 	else
 	{
 		c.setFillColor(this.fill);
-		c.setFillStyle(this.fillStyle);
+		c.setFillStyle(this.fillStyle, this.hachureGap,
+			this.fillWeight, this.hachureAngle);
 	}
 
 	if (this.style != null)
@@ -1394,6 +1395,9 @@ mxShape.prototype.apply = function(state)
 		this.opacity = mxUtils.getValue(this.style, mxConstants.STYLE_OPACITY, this.opacity);
 		this.fillOpacity = mxUtils.getValue(this.style, mxConstants.STYLE_FILL_OPACITY, this.fillOpacity);
 		this.fillStyle = mxUtils.getValue(this.style,  mxConstants.STYLE_FILL_STYLE, null);
+		this.hachureGap = mxUtils.getValue(this.style, mxConstants.STYLE_HACHURE_GAP, null);
+		this.hachureAngle = mxUtils.getValue(this.style, mxConstants.STYLE_HACHURE_ANGLE, null);
+		this.fillWeight = mxUtils.getValue(this.style, mxConstants.STYLE_FILL_WEIGHT, null);
 		this.strokeOpacity = mxUtils.getValue(this.style, mxConstants.STYLE_STROKE_OPACITY, this.strokeOpacity);
 		this.stroke = mxUtils.getValue(this.style, mxConstants.STYLE_STROKECOLOR, this.stroke);
 		this.strokewidth = mxUtils.getNumber(this.style, mxConstants.STYLE_STROKEWIDTH, this.strokewidth);
@@ -1576,6 +1580,22 @@ mxShape.prototype.createBoundingBox = function()
  */
 mxShape.prototype.augmentBoundingBox = function(bbox)
 {
+	this.augmentShadowBoundingBox(bbox);
+
+	// Adds stroke width
+	if (this.stroke != null)
+	{
+		bbox.grow(this.strokewidth * this.scale / 2);
+	}
+};
+
+/**
+ * Function: augmentShadowBoundingBox
+ *
+ * Augments the bounding box with the shadow offsets.
+ */
+mxShape.prototype.augmentShadowBoundingBox = function(bbox)
+{
 	if (this.isShadow)
 	{
 		var ss = this.getShadowStyle();
@@ -1595,12 +1615,6 @@ mxShape.prototype.augmentBoundingBox = function(bbox)
 		bbox.grow(Math.max(ss.blur, 0) * this.scale * 2);
 		bbox.width += Math.ceil(Math.max(ss.dx, 0) * this.scale);
 		bbox.height += Math.ceil(Math.max(ss.dy, 0) * this.scale);
-	}
-	
-	// Adds stroke width
-	if (this.stroke != null)
-	{
-		bbox.grow(this.strokewidth * this.scale / 2);
 	}
 };
 

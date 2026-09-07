@@ -795,10 +795,37 @@
 
 	/**
 	 * Variable: STYLE_FILL_STYLE
-	 * 
+	 *
 	 * Defines the key for the fill style style.
 	 */
 	STYLE_FILL_STYLE: 'fillStyle',
+
+	/**
+	 * Variable: STYLE_HACHURE_GAP
+	 *
+	 * Defines the key for the hachure gap style. The type of the value is
+	 * numeric and defines the distance between the strokes of fill
+	 * patterns. -1 means automatic. Value is "hachureGap".
+	 */
+	STYLE_HACHURE_GAP: 'hachureGap',
+
+	/**
+	 * Variable: STYLE_HACHURE_ANGLE
+	 *
+	 * Defines the key for the hachure angle style. The type of the value
+	 * is numeric and defines the angle of the strokes of fill patterns in
+	 * degrees. Value is "hachureAngle".
+	 */
+	STYLE_HACHURE_ANGLE: 'hachureAngle',
+
+	/**
+	 * Variable: STYLE_FILL_WEIGHT
+	 *
+	 * Defines the key for the fill weight style. The type of the value is
+	 * numeric and defines the stroke width of fill patterns. -1 means
+	 * automatic. Value is "fillWeight".
+	 */
+	STYLE_FILL_WEIGHT: 'fillWeight',
 
 	/**
 	 * Variable: STYLE_STROKE_OPACITY
@@ -1275,9 +1302,13 @@
 
 	/**
 	 * Variable: STYLE_LABEL_PADDING
-	 * 
+	 *
 	 * Defines the key for the label padding, ie. the space between the label
-	 * border and the label. Value is "labelPadding".
+	 * text and its background box as defined by <STYLE_LABEL_BACKGROUNDCOLOR>
+	 * and <STYLE_LABEL_BORDERCOLOR>. The value is a CSS-style spacing
+	 * shorthand of 1-4 space-separated numbers (top, right, bottom, left).
+	 * For labels with a fixed-size box (fill, width and block <STYLE_OVERFLOW>
+	 * values) the padding insets the text instead. Value is "labelPadding".
 	 */
 	STYLE_LABEL_PADDING: 'labelPadding',
 
@@ -1506,6 +1537,45 @@
 	 * (default) for visible. Value is "swimlaneBody".
 	 */
 	STYLE_SWIMLANE_BODY: 'swimlaneBody',
+
+	/**
+	 * Variable: STYLE_FOOTER_SIZE
+	 *
+	 * Defines the key for the footerSize style. This style specifies the size of
+	 * an additional filled, bordered region painted at the end of a swimlane
+	 * opposite the title (the "footer"), or at the bottom of a rectangle. Use 0
+	 * (default) for no footer. Value is "footerSize".
+	 */
+	STYLE_FOOTER_SIZE: 'footerSize',
+
+	/**
+	 * Variable: STYLE_FOOTER_COLOR
+	 *
+	 * Defines the key for the footerColor style. This style specifies the fill
+	 * color of the footer region of a rectangle (see <STYLE_FOOTER_SIZE>). If
+	 * not specified then the stroke color is used. Value is "footerColor".
+	 */
+	STYLE_FOOTER_COLOR: 'footerColor',
+
+	/**
+	 * Variable: STYLE_CENTER_RADIUS
+	 *
+	 * Defines the key for the centerRadius style. This style specifies the
+	 * radius of an additional filled circle painted at the center of an
+	 * ellipse, e.g. for UML final states. Use 0 (default) for no center
+	 * circle. Value is "centerRadius".
+	 */
+	STYLE_CENTER_RADIUS: 'centerRadius',
+
+	/**
+	 * Variable: STYLE_CENTER_COLOR
+	 *
+	 * Defines the key for the centerColor style. This style specifies the
+	 * fill color of the center circle of an ellipse (see
+	 * <STYLE_CENTER_RADIUS>). If not specified then the stroke color is
+	 * used. Value is "centerColor".
+	 */
+	STYLE_CENTER_COLOR: 'centerColor',
 
 	/**
 	 * Variable: STYLE_ENDFILL
@@ -1835,8 +1905,9 @@
 	 *
 	 * Defines the key for the groupPadding style. This specifies the padding
 	 * in pixels between the children of a group and the group bounds when
-	 * using extendParent or contractParent. Default is 0. Value is
-	 * "groupPadding".
+	 * using extendParent or contractParent. Accepts 1-4 space-separated
+	 * values in CSS TRBL order (see mxUtils.parsePadding). Default is 0.
+	 * Value is "groupPadding".
 	 */
 	STYLE_GROUP_PADDING: 'groupPadding',
 
@@ -2048,11 +2119,20 @@
 
 	/**
 	 * Variable: FONT_STRIKETHROUGH
-	 * 
+	 *
 	 * Constant for strikthrough fonts. Default is 8.
 	 */
 	FONT_STRIKETHROUGH: 8,
-	
+
+	/**
+	 * Variable: FONT_UNDERLINE_DOTTED
+	 *
+	 * Constant for dotted text decorations. Only takes effect together
+	 * with <FONT_UNDERLINE> or <FONT_STRIKETHROUGH> and renders all text
+	 * decorations of the label dotted. Default is 16.
+	 */
+	FONT_UNDERLINE_DOTTED: 16,
+
 	/**
 	 * Variable: SHAPE_RECTANGLE
 	 * 
